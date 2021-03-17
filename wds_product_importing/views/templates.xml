@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <template id="product_details_inherit_wds" name="Product Details" inherit_id="website_sale.product">
+        <xpath expr="//div[@id='product_details']//hr" position="after">
+            <div t-if="product.mfr_name">
+                <strong>Manufacturer Name: </strong>
+                <span t-field="product.mfr_name" />
+            </div>
+            <div t-if="product.mfr_num">
+                <strong>Manufacturer Number: </strong>
+                <span t-field="product.mfr_num" />
+            </div>
+
+            <div t-if="product.vendor_name">
+                <strong>Vendor Name: </strong>
+                <span t-field="product.vendor_name" />
+            </div>
+            <div t-if="product.product_code">
+                <strong>Catalog Number: </strong>
+                <span t-field="product.product_code" />
+            </div>
+        </xpath>
+    </template>
+</odoo>

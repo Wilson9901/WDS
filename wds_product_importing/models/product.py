@@ -7,6 +7,10 @@ from odoo import models, fields, api
 class ProductProduct(models.Model):
     _inherit = 'product.product'
 
+    _sql_constraints = [
+        ('default_code_unique', 'UNIQUE(default_code)', 'You can not have two records with the same default code!')
+    ]
+
     size = fields.Char(string='Size')
     unit = fields.Char(string='Unit')
     unitqty = fields.Char(string='Unit Quantity')

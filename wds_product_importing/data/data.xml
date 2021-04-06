@@ -5,4 +5,8 @@
         <field name="display_type">radio</field>
         <field name="create_variant">always</field>
     </record>
+    <record id="documents_imported_folder" model="documents.folder">
+        <field name="name">Import Complete</field>
+        <field name="sequence">15</field>
+    </record>
 </odoo>

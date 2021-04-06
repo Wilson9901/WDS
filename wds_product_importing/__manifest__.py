@@ -6,6 +6,8 @@
 
     'description': """
         [2420357]
+        create product variants from importing product templates,
+        list products automatically in website
         """,
 
     'author': 'Odoo',
@@ -16,15 +18,23 @@
     'license': 'OEEL-1',
 
     # any module necessary for this one to work correctly
-    'depends': ['base_import', 'product', 'purchase', 'stock', 'website_sale'],
+    'depends': ['base_import',
+                'documents_product',
+                'product',
+                'purchase',
+                'stock',
+                'website_sale',
+                ],
     # 'depends': ['base_import', 'product', 'website_sale'],
 
     # always loaded
     'data': [
+        'data/actions.xml',
+        'data/data.xml',
+        'views/documents_views.xml',
         'views/product_template_views.xml',
         'views/product_product_views.xml',
         'views/templates.xml',
-        'data/data.xml',
     ],
     # only loaded in demonstration mode
     'demo': [],

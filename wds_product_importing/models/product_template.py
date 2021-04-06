@@ -194,7 +194,7 @@ class ProductTemplate(models.Model):
             fields = self._get_fields_from_sheet(sheet)
             for row_num in range(1, sheet.nrows):
                 vals = self._get_vals_from_row(sheet, row_num, fields)
-                product_to_update = self.search([('default_code', '=', vals.pop('default_code')), limit=1])
+                product_to_update = self.search([('default_code', '=', vals.pop('default_code'))], limit=1) if 'default_code' in vals else None
                 if product_to_update:
                     # product = self.env['ir.model.data'].xmlid_to_res_id(vals.pop('external id'))
                     product_to_update.write(vals)

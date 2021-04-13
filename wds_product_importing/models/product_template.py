@@ -105,13 +105,14 @@ class ProductTemplate(models.Model):
         input: xlsx sheet, row to create product from, list of fields(matching index with column of sheet)
         output: dictionary with field:val of non empty cells
         '''
-        def grabImage(url):
-            img = Image.open(requests.get(url, stream=True).raw)
-            image_buffer = io.BytesIO()
-            img = img.convert("RGB")
-            img.save(image_buffer, format="JPEG")
-            image_data = base64.b64encode(image_buffer.getvalue())
-            return image_data
+        base_import = self.env['base_import.import']
+        # def grabImage(url):
+        #     img = Image.open(requests.get(url, stream=True).raw)
+        #     image_buffer = io.BytesIO()
+        #     img = img.convert("RGB")
+        #     img.save(image_buffer, format="JPEG")
+        #     image_data = base64.b64encode(image_buffer.getvalue())
+        #     return image_data
 
         vals = {
             'categ_id': self.env.ref('product.product_category_all').id,
@@ -126,7 +127,8 @@ class ProductTemplate(models.Model):
         # can use instead self.env.ref('uom.product_uom_unit')
         for idx in range(len(fields)):
             if fields[idx] == 'image_1920' and sheet.cell_type(row_num, idx) != 0:
-                vals[fields[idx]] = grabImage(sheet.cell_value(row_num, idx))
+                # vals[fields[idx]] = grabImage(sheet.cell_value(row_num, idx))
+                vals[fields[idx]] = base_import._import_image_by_url(sheet.cell_value(row_num, idx), requests.Session(), 'image_1920', row_num)
             elif fields[idx] is not None and sheet.cell_type(row_num, idx) != 0:
                 vals[fields[idx]] = sheet.cell_value(row_num, idx)
         return vals

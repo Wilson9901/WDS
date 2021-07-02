@@ -8,7 +8,8 @@ class ProductProduct(models.Model):
     _inherit = 'product.product'
 
     _sql_constraints = [
-        ('default_code_unique', 'UNIQUE(default_code)', 'You can not have two records with the same default code!')
+        ('default_code_unique', 'UNIQUE(default_code)', 'You can not have two records with the same default code!'),
+        ('unique_id_unique', 'UNIQUE(unique_id)', 'You can not have two records with the same unique id!'), 
     ]
 
     size = fields.Char(string='Size')
@@ -24,10 +25,11 @@ class ProductProduct(models.Model):
             to_uom = self.env['uom.uom'].browse(self._context['uom'])
 
         for product in self:
+            price = product.base_list_price if product.base_list_price != 0 else product.list_price
             if to_uom:
-                list_price = product.uom_id._compute_price(product.base_list_price, to_uom)
+                list_price = product.uom_id._compute_price(price, to_uom)
             else:
-                list_price = product.base_list_price
+                list_price = price
             product.lst_price = list_price
 
 class SupplierInfo(models.Model):

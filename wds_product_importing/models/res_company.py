@@ -10,6 +10,10 @@ class ResCompany(models.Model):
         company = self.env.company
         return ['|', ('company_id', '=', False), ('company_id', '=', company)]
 
-    import_folder = fields.Many2one('documents.folder', string="Imported Workspace", domain=_domain_company,
-                                    default=lambda self: self.env.ref('wds_product_importing.documents_imported_folder',
+    import_folder = fields.Many2one('documents.folder', string="Importing Workspace", domain=_domain_company,
+                                    default=lambda self: self.env.ref('wds_product_importing.documents_import_folder',
                                                                       raise_if_not_found=False))
+
+    complete_import_folder = fields.Many2one('documents.folder', string="Imported Workspace", domain=_domain_company,
+                                             default=lambda self: self.env.ref('wds_product_importing.documents_complete_import_folder',
+                                                                               raise_if_not_found=False))

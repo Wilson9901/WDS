@@ -8,4 +8,7 @@ class ResConfigSettings(models.TransientModel):
     _inherit = 'res.config.settings'
 
     import_folder = fields.Many2one('documents.folder', related='company_id.import_folder', readonly=False,
-                                    string="product import workspace")
+                                    string="product importing workspace")
+
+    complete_import_folder = fields.Many2one('documents.folder', related='company_id.complete_import_folder', readonly=False,
+                                             string="product imported workspace")

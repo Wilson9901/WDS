@@ -9,6 +9,7 @@ import re
 import xmlrpc.client
 from PIL import Image
 import io
+import pudb
 
 try:
     import xlrd
@@ -49,19 +50,23 @@ class ProductTemplate(models.Model):
     unit_1 = fields.Char(string='UNIT_1')
     unitqty_1 = fields.Char(string='UNITQTY_1')
     cost_1 = fields.Float(string='COST1')
-    list_1 = fields.Float(string='LIST_1')
+    list_1 = fields.Float(string='LIST1')
 
     size_2 = fields.Char(string='SIZE_2')
     unit_2 = fields.Char(string='UNIT_2')
     unitqty_2 = fields.Char(string='UNITQTY_2')
     cost_2 = fields.Float(string='COST2')
-    list_2 = fields.Float(string='LIST_2')
+    list_2 = fields.Float(string='LIST2')
 
     size_3 = fields.Char(string='SIZE_3')
     unit_3 = fields.Char(string='UNIT_3')
     unitqty_3 = fields.Char(string='UNITQTY_3')
     cost_3 = fields.Float(string='COST3')
-    list_3 = fields.Float(string='LIST_3')
+    list_3 = fields.Float(string='LIST3')
+
+    size = fields.Char(related='product_variant_id.size')
+    unit = fields.Char(related='product_variant_id.unit')
+    unitqty = fields.Char(related='product_variant_id.unitqty')
 
     '''
     import all products from documents in the designated product folder then move attachment to different folder
@@ -69,50 +74,50 @@ class ProductTemplate(models.Model):
 
     def _cron_import_all_products(self):
         company = self.company_id or self.env.company
-        docs = company.product_folder.document_ids
+        docs = company.import_folder.document_ids
         self._import_documents(docs)
 
     def _get_fields_from_sheet(self, sheet):
         '''
         input: xlsx sheet, use header to match table rows
         output: list matching column of sheet w/ corresponding field, None if no field can be found
-
-
+        need to get correct type from field here
         fields = [None, None, ...]
-        get all fields from model
-        get descriptions from model
-        create {description:field}
+        create list of field name, string, type
         if field in sheet, change None at index of sheet column to field at fields[index]
+
         '''
+
         fields = [None] * sheet.ncols
-        field_names = self.env['product.template']._fields
-        field_strings = [self.env['product.template']._fields[val].string.lower() for val in field_names]
-        field_pairs = dict(zip(field_strings, field_names))
+        product_fields = []
+        for name, field in self.fields_get().items():
+            if field.get('deprecated', False) is not False:
+                continue
+            field_value = {
+                # 'id': name,
+                'name': name,
+                'string': field['string'].lower(),
+                # 'required': bool(field.get('required')),
+                # 'fields': [],
+                'type': field['type'],
+            }
+            product_fields.append(field_value)
 
         for idx in range(sheet.ncols):
-            if sheet.cell_value(0, idx).lower().strip() in field_names:
-                fields[idx] = sheet.cell_value(0, idx).lower().strip()
-            elif sheet.cell_value(0, idx).lower().strip() in field_strings:
-                fields[idx] = field_pairs[sheet.cell_value(0, idx).lower().strip()]
-            # elif re.search('^external.?id$', sheet.cell_value(0, idx).lower().strip()):
-            #     fields[idx] = 'external id'
-            elif re.search('^image', sheet.cell_value(0, idx).lower().strip()):
-                fields[idx] = 'image_1920'
+            curr_col = sheet.cell_value(0, idx).lower().strip()
+            for field in product_fields:
+                if curr_col == field['name'] or curr_col == field['string']:
+                    fields[idx] = field
+                elif re.search('^image', curr_col):
+                    fields[idx] = {'name': 'image_1920', 'string': 'image', 'type': 'binary'}
         return fields
 
-    def _get_vals_from_row(self, sheet, row_num, fields):
+    def _prepare_product_template_vals_from_row(self, sheet, row_num, fields):
         '''
         input: xlsx sheet, row to create product from, list of fields(matching index with column of sheet)
-        output: dictionary with field:val of non empty cells
+        output: dictionary with field name:val of non empty cells
         '''
         base_import = self.env['base_import.import']
-        # def grabImage(url):
-        #     img = Image.open(requests.get(url, stream=True).raw)
-        #     image_buffer = io.BytesIO()
-        #     img = img.convert("RGB")
-        #     img.save(image_buffer, format="JPEG")
-        #     image_data = base64.b64encode(image_buffer.getvalue())
-        #     return image_data
 
         vals = {
             'categ_id': self.env.ref('product.product_category_all').id,
@@ -126,17 +131,36 @@ class ProductTemplate(models.Model):
         }
         # can use instead self.env.ref('uom.product_uom_unit')
         for idx in range(len(fields)):
-            if fields[idx] == 'image_1920' and sheet.cell_type(row_num, idx) != 0:
-                # vals[fields[idx]] = grabImage(sheet.cell_value(row_num, idx))
-                vals[fields[idx]] = base_import._import_image_by_url(sheet.cell_value(row_num, idx), requests.Session(), 'image_1920', row_num)
-            elif fields[idx] is not None and sheet.cell_type(row_num, idx) != 0:
-                vals[fields[idx]] = sheet.cell_value(row_num, idx)
+            if fields[idx] and fields[idx]['name'] == 'image_1920' and sheet.cell_type(row_num, idx) != 0:
+                vals[fields[idx]['name']] = base_import._import_image_by_url(sheet.cell_value(row_num, idx), requests.Session(), 'image_1920', row_num)
+            elif fields[idx] and sheet.cell_type(row_num, idx) != 0:
+                val = sheet.row_values(row_num)
+                if fields[idx]['type'] in ['char', 'text', 'html']:
+                    try:
+                        vals[fields[idx]['name']] = str(int(sheet.cell_value(row_num, idx)))
+                    except Exception:
+                        vals[fields[idx]['name']] = sheet.cell_value(row_num, idx)
+                else:
+                    vals[fields[idx]['name']] = sheet.cell_value(row_num, idx)
+        
         return vals
+
+    def _prepare_product_product_vals(self, product, idx):
+        return {
+            'base_list_price': product['list_' + str(idx)],
+            'standard_price': product['cost_' + str(idx)],
+            'unit': product['unit_' + str(idx)],
+            'unitqty': product['unitqty_' + str(idx)],
+            'size': product['size_' + str(idx)],
+            'is_published': True,
+            'default_code': ''.join((product['product_code'], product['unit_' + str(idx)]))
+            }
 
     def _create_variants_from_fields(self, templates):
         # self.search([('id', 'in', ids)])
         size_attr = self.env['product.attribute'].search([('name', '=', 'Size')], limit=1)
         # create variants based on size_n
+        # create or fetch id of attribute
         for product in templates:
             size_attr_vals = []
             for idx in range(1, 4):
@@ -159,14 +183,24 @@ class ProductTemplate(models.Model):
                     for idx in range(1, 4):
                         # variant should only have one tag, but in case multiple, using mapped
                         if product['size_' + str(idx)] and product['size_' + str(idx)] in variant.product_template_attribute_value_ids.mapped('name'):
-                            variant.write({
-                                'base_list_price': product['list_' + str(idx)],
-                                'standard_price': product['cost_' + str(idx)],
-                                'unit': product['unit_' + str(idx)],
-                                'unitqty': product['unitqty_' + str(idx)],
-                                'size': product['size_' + str(idx)],
-                                'is_published': True,
-                            })
+                            vals = self._prepare_product_product_vals(product, idx)
+                            variant.write(vals)
+            else:
+                # if size_(1,2,3) are empty, update product.template fields
+                product.product_variant_id.write({
+                    'base_list_price': product['list_1'],
+                    'standard_price': product['cost_1'],
+                    'unit': product['unit_1'],
+                    'unitqty': product['unitqty_1'],
+                    'size': product['size_1'],
+                    'is_published': True,
+                    'default_code': ''.join((product['product_code'], product['unit_1']))
+                })
+
+                product.write({
+                    'list_price': product['list_1'],
+                    'standard_price': product['cost_1']
+                })
 
             partner_id = self.env['res.partner'].search(
                 [('name', '=', product['vendor_name'])], limit=1).id
@@ -177,8 +211,8 @@ class ProductTemplate(models.Model):
                 }]).id
             product.write({
                 'seller_ids': [[0, False, {'sequence': 1, 'name': partner_id, 'product_id': False, 'product_name': False, 'product_code': product['product_code'],
-                                            'currency_id': self.env.ref('base.main_company').currency_id.id, 'mfr_name':product['mfr_name'], 'mfr_num':product['mfr_num'],
-                                            'date_start': False, 'date_end': False, 'company_id': self.env.company.id, 'min_qty': 0, 'price': 0, 'delay': 1}]],
+                                           'currency_id': self.env.ref('base.main_company').currency_id.id, 'mfr_name': product['mfr_name'], 'mfr_num': product['mfr_num'],
+                                           'date_start': False, 'date_end': False, 'company_id': self.env.company.id, 'min_qty': 0, 'price': 0, 'delay': 1}]],
                 'is_published': True
             })
         return templates
@@ -186,6 +220,8 @@ class ProductTemplate(models.Model):
     def _import_documents(self, documents):
         '''
         import documents from cron or manually from server action on documents.document
+        product_code decided to be field on product template used to match records
+        product_code + unit for variants
         '''
         company = self.company_id or self.env.company
         templates = self.env['product.template']
@@ -195,17 +231,49 @@ class ProductTemplate(models.Model):
             vals_to_create = []
             fields = self._get_fields_from_sheet(sheet)
             for row_num in range(1, sheet.nrows):
-                vals = self._get_vals_from_row(sheet, row_num, fields)
-                product_to_update = self.search([('default_code', '=', vals.pop('default_code'))], limit=1) if 'default_code' in vals else None
+                # pu.db
+                vals = self._prepare_product_template_vals_from_row(sheet, row_num, fields)
+                product_to_update = self.search([('product_code', '=', vals.get('product_code'))], limit=1) if 'product_code' in vals else None
                 if product_to_update:
-                    # product = self.env['ir.model.data'].xmlid_to_res_id(vals.pop('external id'))
-                    product_to_update.write(vals)
-                    templates += product
+                    product_to_update._update_product(vals)
                 else:
                     vals_to_create.append(vals)
             if vals_to_create:
                 templates += self.create(vals_to_create)
-        if templates:
-            self._create_variants_from_fields(templates)
-        doc.folder_id = company.import_folder
+            if len(templates):
+                self._create_variants_from_fields(templates)
+            doc.folder_id = company.complete_import_folder.id
         return templates
+
+    def _update_product(self, vals):
+        '''
+        input: product to update is self, value dict with product variants/product to update
+        output: update product/variant
+        update template, update variants, unlink old variant if variants change, create new variant?
+        '''
+        self.ensure_one()
+        # pu.db
+        # ids to update: self.product_variant_ids
+        # search for values
+        # remove default values and values that are unchanged
+        to_rem = ['categ_id', 'product_variant_ids', 'purchase_line_warn', 'sale_line_warn', 'tracking', 'type', 'uom_id', 'uom_po_id']
+        for key, val in vals.items():
+            try:
+                if val == self[key].id:
+                    to_rem.append(key)
+            except Exception:
+                if val == self[key]:
+                    to_rem.append(key)
+        [vals.pop(key) for key in set(to_rem)]
+        self.write(vals)
+        variant_ids = self.product_variant_ids
+        for idx in range(1, 4):
+            # check size_(idx) before searching for updateable product, then check on default_code
+            if self['size_' + str(idx)]:
+                vals = self._prepare_product_product_vals(self, idx)
+                for variant in self.product_variant_ids:
+                    if vals['default_code'] == variant.default_code:
+                        variant.write(vals)
+                        variant_ids -= variant
+        # variant_ids now recordset of uneditted/deprecated variants
+        # variant_ids.write({'active': False})

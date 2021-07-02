@@ -9,7 +9,6 @@ class ProductProduct(models.Model):
 
     _sql_constraints = [
         ('default_code_unique', 'UNIQUE(default_code)', 'You can not have two records with the same default code!'),
-        ('unique_id_unique', 'UNIQUE(unique_id)', 'You can not have two records with the same unique id!'), 
     ]
 
     size = fields.Char(string='Size')

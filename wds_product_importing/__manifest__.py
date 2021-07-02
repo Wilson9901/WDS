@@ -19,13 +19,12 @@
 
     # any module necessary for this one to work correctly
     'depends': ['base_import',
-                'documents_product',
+                'documents',
                 'product',
                 'purchase',
                 'stock',
                 'website_sale',
                 ],
-    # 'depends': ['base_import', 'product', 'website_sale'],
 
     # always loaded
     'data': [

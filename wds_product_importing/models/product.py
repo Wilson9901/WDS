@@ -15,6 +15,7 @@ class ProductProduct(models.Model):
     unit = fields.Char(string='Unit')
     unitqty = fields.Char(string='Unit Quantity')
     base_list_price = fields.Float(string='Variant Base Price')
+    to_remove = fields.Boolean(default=False)
 
     @api.depends('list_price', 'base_list_price')
     @api.depends_context('uom')

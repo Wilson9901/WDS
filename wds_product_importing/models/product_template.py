@@ -6,10 +6,13 @@ from odoo import models, fields, api
 import base64
 import requests
 import re
-import xmlrpc.client
-from PIL import Image
-import io
-import pudb
+import logging
+# import xmlrpc.client
+# from PIL import Image
+# import io
+# import pudb
+
+_logger = logging.getLogger(__name__)
 
 try:
     import xlrd
@@ -34,7 +37,7 @@ class ProductTemplate(models.Model):
     # image_1920 = fields.Binary(string='IMAGE')
     product_url = fields.Char(string='PRODUCT URL')
     weblink = fields.Char(string='ADDITIONAL WEBLINK')
-    weblink_title = fields.Char(string='ADDITIONAL WEBLINK TITLE')
+    weblink_title = fields.Char(string='ADDITIONAL WEBLINK_TITLE')
 
     upc_code = fields.Char(string='UPC')
     upn_code = fields.Char(string='UPN')
@@ -77,6 +80,38 @@ class ProductTemplate(models.Model):
         docs = company.import_folder.document_ids
         self._import_documents(docs)
 
+    def _import_documents(self, documents):
+        '''
+        input: documents
+        output: product.templates, product.products, imported documents placed in completed folder
+
+        todo: create rollback and add batches
+        '''
+        company = self.company_id or self.env.company
+        templates = self.env['product.template']
+        _logger.info('importing document(s)')
+        for doc in documents:
+            data = base64.b64decode(doc.attachment_id.datas)
+            sheet = xlrd.open_workbook(file_contents=data).sheet_by_index(0)
+            vals_to_create = []
+            fields = self._get_fields_from_sheet(sheet)
+            for row_num in range(1, sheet.nrows):
+                # go through sheet, creating or updating product.templates and product.products
+                vals = self._prepare_product_template_vals_from_row(sheet, row_num, fields)
+                product_to_update = self.search([('product_code', '=', vals.get('product_code'))], limit=1) if 'product_code' in vals else None
+                if product_to_update:
+                    _logger.info('updating product: %s', vals.get('product_code'))
+                    product_to_update._update_product(vals)
+                else:
+                    vals_to_create.append(vals)
+            if vals_to_create:
+                templates += self.create(vals_to_create)
+            if len(templates):
+                self._create_variants_from_fields(templates)
+            doc.folder_id = company.complete_import_folder.id
+        _logger.info('done')
+        return templates
+
     def _get_fields_from_sheet(self, sheet):
         '''
         input: xlsx sheet, use header to match table rows
@@ -85,20 +120,15 @@ class ProductTemplate(models.Model):
         fields = [None, None, ...]
         create list of field name, string, type
         if field in sheet, change None at index of sheet column to field at fields[index]
-
         '''
-
         fields = [None] * sheet.ncols
         product_fields = []
         for name, field in self.fields_get().items():
             if field.get('deprecated', False) is not False:
                 continue
             field_value = {
-                # 'id': name,
                 'name': name,
                 'string': field['string'].lower(),
-                # 'required': bool(field.get('required')),
-                # 'fields': [],
                 'type': field['type'],
             }
             product_fields.append(field_value)
@@ -142,7 +172,6 @@ class ProductTemplate(models.Model):
                         vals[fields[idx]['name']] = sheet.cell_value(row_num, idx)
                 else:
                     vals[fields[idx]['name']] = sheet.cell_value(row_num, idx)
-        
         return vals
 
     def _prepare_product_product_vals(self, product, idx):
@@ -154,7 +183,15 @@ class ProductTemplate(models.Model):
             'size': product['size_' + str(idx)],
             'is_published': True,
             'default_code': ''.join((product['product_code'], product['unit_' + str(idx)]))
-            }
+        }
+
+    def _create_attribute(self, size):
+        size_attr = self.env['product.attribute'].search([('name', '=', 'Size')], limit=1)
+        variant_value = size_attr.value_ids.search([('name', '=', size)], limit=1)
+        if not variant_value:
+            size_attr.write({
+                'value_ids': [[0, 0, {'name': size}]]
+            })
 
     def _create_variants_from_fields(self, templates):
         # self.search([('id', 'in', ids)])
@@ -165,12 +202,7 @@ class ProductTemplate(models.Model):
             size_attr_vals = []
             for idx in range(1, 4):
                 if product['size_' + str(idx)]:
-                    # need to search before writing
-                    variant_value = size_attr.value_ids.search([('name', '=', product['size_' + str(idx)])])
-                    if not variant_value:
-                        size_attr.write({
-                            'value_ids': [[0, 0, {'name': product['size_' + str(idx)]}]]
-                        })
+                    self._create_attribute(product['size_' + str(idx)])
                     size_attr_vals.append(product['size_' + str(idx)])
             # create attribute lines for values of variants
             if size_attr_vals:
@@ -187,12 +219,13 @@ class ProductTemplate(models.Model):
                             variant.write(vals)
             else:
                 # if size_(1,2,3) are empty, update product.template fields
-                product.product_variant_id.write({
+                product.product_variant_ids[:1].write({
+                # product.product_variant_id.write({
                     'base_list_price': product['list_1'],
                     'standard_price': product['cost_1'],
                     'unit': product['unit_1'],
                     'unitqty': product['unitqty_1'],
-                    'size': product['size_1'],
+                    # 'size': product['size_1'],
                     'is_published': True,
                     'default_code': ''.join((product['product_code'], product['unit_1']))
                 })
@@ -212,37 +245,9 @@ class ProductTemplate(models.Model):
             product.write({
                 'seller_ids': [[0, False, {'sequence': 1, 'name': partner_id, 'product_id': False, 'product_name': False, 'product_code': product['product_code'],
                                            'currency_id': self.env.ref('base.main_company').currency_id.id, 'mfr_name': product['mfr_name'], 'mfr_num': product['mfr_num'],
-                                           'date_start': False, 'date_end': False, 'company_id': self.env.company.id, 'min_qty': 0, 'price': 0, 'delay': 1}]],
+                                           'date_start': False, 'date_end': False, 'company_id': self.env.company.id, 'min_qty': 0, 'price': product['cost_1'], 'delay': 1}]],
                 'is_published': True
             })
-        return templates
-
-    def _import_documents(self, documents):
-        '''
-        import documents from cron or manually from server action on documents.document
-        product_code decided to be field on product template used to match records
-        product_code + unit for variants
-        '''
-        company = self.company_id or self.env.company
-        templates = self.env['product.template']
-        for doc in documents:
-            data = base64.b64decode(doc.attachment_id.datas)
-            sheet = xlrd.open_workbook(file_contents=data).sheet_by_index(0)
-            vals_to_create = []
-            fields = self._get_fields_from_sheet(sheet)
-            for row_num in range(1, sheet.nrows):
-                # pu.db
-                vals = self._prepare_product_template_vals_from_row(sheet, row_num, fields)
-                product_to_update = self.search([('product_code', '=', vals.get('product_code'))], limit=1) if 'product_code' in vals else None
-                if product_to_update:
-                    product_to_update._update_product(vals)
-                else:
-                    vals_to_create.append(vals)
-            if vals_to_create:
-                templates += self.create(vals_to_create)
-            if len(templates):
-                self._create_variants_from_fields(templates)
-            doc.folder_id = company.complete_import_folder.id
         return templates
 
     def _update_product(self, vals):
@@ -252,10 +257,9 @@ class ProductTemplate(models.Model):
         update template, update variants, unlink old variant if variants change, create new variant?
         '''
         self.ensure_one()
-        # pu.db
         # ids to update: self.product_variant_ids
         # search for values
-        # remove default values and values that are unchanged
+        # remove default values and values that are unchanged, product_variant_ids will cause apples to oranges warning but doesnt matter
         to_rem = ['categ_id', 'product_variant_ids', 'purchase_line_warn', 'sale_line_warn', 'tracking', 'type', 'uom_id', 'uom_po_id']
         for key, val in vals.items():
             try:
@@ -264,16 +268,63 @@ class ProductTemplate(models.Model):
             except Exception:
                 if val == self[key]:
                     to_rem.append(key)
+
         [vals.pop(key) for key in set(to_rem)]
+        # find size_ in vals, only new values will exist
+        new_variants = [key for key in vals.keys() if key.startswith('size_')]
+
+        if not vals:
+            return 0
+
         self.write(vals)
+
+        # update variants
+        self._update_variants()
+
+        # create new variants
+        if len(new_variants):
+            size_attr = self.env['product.attribute'].search([('name', '=', 'Size')], limit=1)
+            size_attr_vals = []
+            for size in new_variants:
+                self._create_attribute(self[size])
+                size_attr_vals.append(self[size])
+            size_attr_ids = size_attr.value_ids.search([('name', 'in', size_attr_vals)])
+            attribute_line = self.env['product.template.attribute.line'].search([('product_tmpl_id', '=', self.id), ('attribute_id', '=', size_attr.id)], limit=1)
+            # variants get created here
+            if attribute_line:
+                attribute_line.write({'value_ids': [[0, False, size_attr_ids.mapped('id')]]})
+            else:
+                self.write({
+                    'attribute_line_ids': [[0, False, {'attribute_id': size_attr.id, 'value_ids': [[6, False, size_attr_ids.mapped('id')]]}]]
+                })
+            # get newly created variants and update with _prepare_product_product_vals(self, num)
+            for size in new_variants:
+                new_variant_vals = self._prepare_product_product_vals(self, int(size[-1]))
+                for variant in self.product_variant_ids:
+                    if self[size] in variant.product_template_attribute_value_ids.mapped('name'):
+                        variant.write(vals)
+
+    def _update_variants(self):
+        '''
+        input: updated product_template
+        out: updated variants, set flag to filter unused products
+        '''
         variant_ids = self.product_variant_ids
         for idx in range(1, 4):
-            # check size_(idx) before searching for updateable product, then check on default_code
             if self['size_' + str(idx)]:
                 vals = self._prepare_product_product_vals(self, idx)
+                [vals.pop(key) for key in ['size', 'unit', 'is_published']]
                 for variant in self.product_variant_ids:
                     if vals['default_code'] == variant.default_code:
-                        variant.write(vals)
+                        for key, val in vals.items():
+                            if val == variant[key]:
+                                del vals[key]
+                        if vals:
+                            variant.write(vals)
                         variant_ids -= variant
-        # variant_ids now recordset of uneditted/deprecated variants
-        # variant_ids.write({'active': False})
+        # variant_ids will either be empty recordset or recordset of variants to remove
+        if len(variant_ids):
+            variant_ids.to_remove = True
+
+
+# cant update size/unit as unit is used to generate the unique id

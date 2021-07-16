@@ -10,7 +10,7 @@ import logging
 # import xmlrpc.client
 # from PIL import Image
 # import io
-# import pudb
+import pudb
 
 _logger = logging.getLogger(__name__)
 
@@ -235,20 +235,34 @@ class ProductTemplate(models.Model):
                     'standard_price': product['cost_1']
                 })
 
-            partner_id = self.env['res.partner'].search(
-                [('name', '=', product['vendor_name'])], limit=1).id
-            if not partner_id:
-                partner_id = self.env['res.partner'].create([{
-                    'name': product['vendor_name'],
-                    'type': 'contact',
-                }]).id
+            pricelists = product._generate_pricelists()
             product.write({
-                'seller_ids': [[0, False, {'sequence': 1, 'name': partner_id, 'product_id': False, 'product_name': False, 'product_code': product['product_code'],
-                                           'currency_id': self.env.ref('base.main_company').currency_id.id, 'mfr_name': product['mfr_name'], 'mfr_num': product['mfr_num'],
-                                           'date_start': False, 'date_end': False, 'company_id': self.env.company.id, 'min_qty': 0, 'price': product['cost_1'], 'delay': 1}]],
+                'seller_ids': pricelists,
                 'is_published': True
             })
         return templates
+
+    def _generate_pricelists(self):
+        # pu.db
+        partner_id = self.env['res.partner'].search(
+            [('name', '=', self.vendor_name)], limit=1).id
+        if not partner_id:
+            partner_id = self.env['res.partner'].create([{
+                'name': self.vendor_name,
+                'type': 'contact',
+            }]).id
+        if len(self.product_variant_ids) > 1:
+            # pu.db
+            pricelists = []
+            for product in self.product_variant_ids:
+                pricelists.append((0, False, {'sequence': 1, 'name': partner_id, 'product_id': product.id, 'product_name': False, 'product_code': product.default_code,
+                                   'currency_id': self.env.ref('base.main_company').currency_id.id, 'mfr_name': product.mfr_name, 'mfr_num': product.mfr_num,
+                                   'date_start': False, 'date_end': False, 'company_id': self.env.company.id, 'min_qty': 0, 'price': product.standard_price, 'delay': 1}))
+            return pricelists
+        else:
+            return [(0, False, {'sequence': 1, 'name': partner_id, 'product_id': False, 'product_name': False, 'product_code': self.default_code,
+                    'currency_id': self.env.ref('base.main_company').currency_id.id, 'mfr_name': self.mfr_name, 'mfr_num': self.mfr_num,
+                    'date_start': False, 'date_end': False, 'company_id': self.env.company.id, 'min_qty': 0, 'price': self.cost_1, 'delay': 1})]
 
     def _update_product(self, vals):
         '''
@@ -316,9 +330,11 @@ class ProductTemplate(models.Model):
                 [vals.pop(key) for key in ['size', 'unit', 'is_published']]
                 for variant in self.product_variant_ids:
                     if vals['default_code'] == variant.default_code:
+                        to_rem = []
                         for key, val in vals.items():
                             if val == variant[key]:
-                                del vals[key]
+                                to_rem.append(key)
+                        [vals.pop(key) for key in set(to_rem)]
                         if vals:
                             variant.write(vals)
                         variant_ids -= variant

@@ -10,7 +10,7 @@ import logging
 # import xmlrpc.client
 # from PIL import Image
 # import io
-import pudb
+# import pudb
 
 _logger = logging.getLogger(__name__)
 
@@ -243,7 +243,6 @@ class ProductTemplate(models.Model):
         return templates
 
     def _generate_pricelists(self):
-        # pu.db
         partner_id = self.env['res.partner'].search(
             [('name', '=', self.vendor_name)], limit=1).id
         if not partner_id:
@@ -252,7 +251,6 @@ class ProductTemplate(models.Model):
                 'type': 'contact',
             }]).id
         if len(self.product_variant_ids) > 1:
-            # pu.db
             pricelists = []
             for product in self.product_variant_ids:
                 pricelists.append((0, False, {'sequence': 1, 'name': partner_id, 'product_id': product.id, 'product_name': False, 'product_code': product.default_code,
@@ -316,7 +314,18 @@ class ProductTemplate(models.Model):
                 new_variant_vals = self._prepare_product_product_vals(self, int(size[-1]))
                 for variant in self.product_variant_ids:
                     if self[size] in variant.product_template_attribute_value_ids.mapped('name'):
-                        variant.write(vals)
+                        variant.write(new_variant_vals)
+        
+        # # edge case that might not matter
+        # # for products w/o variant, if cost_1/list_1 changes, need to update price
+        # # after variants created/updated
+        # # list_1 and cost_1 could differ however
+        if len(self.product_variant_ids) == 1 and ('list_1' in vals or 'cost_1' in vals):
+            for field in [('list_price', 'list_1'), ('standard_price', 'cost_1')]:
+                if field[1] in vals:
+                    self.write({field[0]: vals[field[1]]})
+
+        self._update_pricelists()
 
     def _update_variants(self):
         '''
@@ -342,5 +351,50 @@ class ProductTemplate(models.Model):
         if len(variant_ids):
             variant_ids.to_remove = True
 
+    def _update_pricelists(self):
+        partner_id = self.env['res.partner'].search(
+            [('name', '=', self.vendor_name)], limit=1).id
+        if not partner_id:
+            partner_id = self.env['res.partner'].create([{
+                'name': self.vendor_name,
+                'type': 'contact',
+            }]).id
+        update_fields = [('standard_price', 'price'), ('mfr_name', 'mfr_name'), ('mfr_num', 'mfr_num')]
+        if len(self.product_variant_ids) > 1:
+            # match variant to pricelist, update price, mfr_name,num?
+            # remove variant from variants
+            variants = self.product_variant_ids.filtered(lambda r: r.to_remove is False)
+            for pricelist in self.seller_ids:
+                for variant in self.product_variant_ids.filtered(lambda r: r.to_remove is False):
+                    vals = {}
+                    if pricelist.product_id.id == variant.id:
+                        for field in update_fields:
+                            if variant[field[0]] != pricelist[field[1]]:
+                                vals[field[1]] = variant[field[0]]
+                    if vals:
+                        pricelist.write(vals)
+                        variants -= variant
+            if len(variants):
+                # remaining variants do not have a pricelist yet
+                pricelists = []
+                for variant in variants:
+                    pricelists.append((0, False, {'sequence': 1, 'name': partner_id, 'product_id': variant.id, 'product_name': False, 'product_code': variant.default_code,
+                                                  'currency_id': self.env.ref('base.main_company').currency_id.id, 'mfr_name': variant.mfr_name, 'mfr_num': variant.mfr_num,
+                                                  'date_start': False, 'date_end': False, 'company_id': self.env.company.id, 'min_qty': 0, 'price': variant.standard_price, 'delay': 1}))
+                self.write({'seller_ids': pricelists})
+        else:
+            # case where product w/o variants updates
+            vals = {}
+            for field in update_fields:
+                if self.seller_ids and self[field[0]] != self.seller_ids[:1][field[1]]:
+                    vals[field[1]] = self[field[0]]
+            if vals:
+                self.seller_ids[:1].write(vals)
 
 # cant update size/unit as unit is used to generate the unique id
+
+
+class SupplierInfo(models.Model):
+    _inherit = 'product.supplierinfo'
+
+    to_remove = fields.Boolean(related='product_id.to_remove')

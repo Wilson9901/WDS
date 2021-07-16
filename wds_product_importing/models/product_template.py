@@ -235,20 +235,32 @@ class ProductTemplate(models.Model):
                     'standard_price': product['cost_1']
                 })
 
-            partner_id = self.env['res.partner'].search(
-                [('name', '=', product['vendor_name'])], limit=1).id
-            if not partner_id:
-                partner_id = self.env['res.partner'].create([{
-                    'name': product['vendor_name'],
-                    'type': 'contact',
-                }]).id
+            pricelists = product._generate_pricelists()
             product.write({
-                'seller_ids': [[0, False, {'sequence': 1, 'name': partner_id, 'product_id': False, 'product_name': False, 'product_code': product['product_code'],
-                                           'currency_id': self.env.ref('base.main_company').currency_id.id, 'mfr_name': product['mfr_name'], 'mfr_num': product['mfr_num'],
-                                           'date_start': False, 'date_end': False, 'company_id': self.env.company.id, 'min_qty': 0, 'price': product['cost_1'], 'delay': 1}]],
+                'seller_ids': pricelists,
                 'is_published': True
             })
         return templates
+
+    def _generate_pricelists(self):
+        partner_id = self.env['res.partner'].search(
+            [('name', '=', self.vendor_name)], limit=1).id
+        if not partner_id:
+            partner_id = self.env['res.partner'].create([{
+                'name': self.vendor_name,
+                'type': 'contact',
+            }]).id
+        if len(self.product_variant_ids) > 1:
+            pricelists = []
+            for product in self.product_variant_ids:
+                pricelists.append((0, False, {'sequence': 1, 'name': partner_id, 'product_id': product.id, 'product_name': False, 'product_code': product.default_code,
+                                   'currency_id': self.env.ref('base.main_company').currency_id.id, 'mfr_name': product.mfr_name, 'mfr_num': product.mfr_num,
+                                   'date_start': False, 'date_end': False, 'company_id': self.env.company.id, 'min_qty': 0, 'price': product.standard_price, 'delay': 1}))
+            return pricelists
+        else:
+            return [(0, False, {'sequence': 1, 'name': partner_id, 'product_id': False, 'product_name': False, 'product_code': self.default_code,
+                    'currency_id': self.env.ref('base.main_company').currency_id.id, 'mfr_name': self.mfr_name, 'mfr_num': self.mfr_num,
+                    'date_start': False, 'date_end': False, 'company_id': self.env.company.id, 'min_qty': 0, 'price': self.cost_1, 'delay': 1})]
 
     def _update_product(self, vals):
         '''
@@ -302,7 +314,18 @@ class ProductTemplate(models.Model):
                 new_variant_vals = self._prepare_product_product_vals(self, int(size[-1]))
                 for variant in self.product_variant_ids:
                     if self[size] in variant.product_template_attribute_value_ids.mapped('name'):
-                        variant.write(vals)
+                        variant.write(new_variant_vals)
+        
+        # # edge case that might not matter
+        # # for products w/o variant, if cost_1/list_1 changes, need to update price
+        # # after variants created/updated
+        # # list_1 and cost_1 could differ however
+        if len(self.product_variant_ids) == 1 and ('list_1' in vals or 'cost_1' in vals):
+            for field in [('list_price', 'list_1'), ('standard_price', 'cost_1')]:
+                if field[1] in vals:
+                    self.write({field[0]: vals[field[1]]})
+
+        self._update_pricelists()
 
     def _update_variants(self):
         '''
@@ -316,9 +339,11 @@ class ProductTemplate(models.Model):
                 [vals.pop(key) for key in ['size', 'unit', 'is_published']]
                 for variant in self.product_variant_ids:
                     if vals['default_code'] == variant.default_code:
+                        to_rem = []
                         for key, val in vals.items():
                             if val == variant[key]:
-                                del vals[key]
+                                to_rem.append(key)
+                        [vals.pop(key) for key in set(to_rem)]
                         if vals:
                             variant.write(vals)
                         variant_ids -= variant
@@ -326,5 +351,50 @@ class ProductTemplate(models.Model):
         if len(variant_ids):
             variant_ids.to_remove = True
 
+    def _update_pricelists(self):
+        partner_id = self.env['res.partner'].search(
+            [('name', '=', self.vendor_name)], limit=1).id
+        if not partner_id:
+            partner_id = self.env['res.partner'].create([{
+                'name': self.vendor_name,
+                'type': 'contact',
+            }]).id
+        update_fields = [('standard_price', 'price'), ('mfr_name', 'mfr_name'), ('mfr_num', 'mfr_num')]
+        if len(self.product_variant_ids) > 1:
+            # match variant to pricelist, update price, mfr_name,num?
+            # remove variant from variants
+            variants = self.product_variant_ids.filtered(lambda r: r.to_remove is False)
+            for pricelist in self.seller_ids:
+                for variant in self.product_variant_ids.filtered(lambda r: r.to_remove is False):
+                    vals = {}
+                    if pricelist.product_id.id == variant.id:
+                        for field in update_fields:
+                            if variant[field[0]] != pricelist[field[1]]:
+                                vals[field[1]] = variant[field[0]]
+                    if vals:
+                        pricelist.write(vals)
+                        variants -= variant
+            if len(variants):
+                # remaining variants do not have a pricelist yet
+                pricelists = []
+                for variant in variants:
+                    pricelists.append((0, False, {'sequence': 1, 'name': partner_id, 'product_id': variant.id, 'product_name': False, 'product_code': variant.default_code,
+                                                  'currency_id': self.env.ref('base.main_company').currency_id.id, 'mfr_name': variant.mfr_name, 'mfr_num': variant.mfr_num,
+                                                  'date_start': False, 'date_end': False, 'company_id': self.env.company.id, 'min_qty': 0, 'price': variant.standard_price, 'delay': 1}))
+                self.write({'seller_ids': pricelists})
+        else:
+            # case where product w/o variants updates
+            vals = {}
+            for field in update_fields:
+                if self.seller_ids and self[field[0]] != self.seller_ids[:1][field[1]]:
+                    vals[field[1]] = self[field[0]]
+            if vals:
+                self.seller_ids[:1].write(vals)
 
 # cant update size/unit as unit is used to generate the unique id
+
+
+class SupplierInfo(models.Model):
+    _inherit = 'product.supplierinfo'
+
+    to_remove = fields.Boolean(related='product_id.to_remove')

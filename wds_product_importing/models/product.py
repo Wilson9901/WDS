@@ -2,7 +2,7 @@
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 from odoo import models, fields, api
-
+import pudb
 
 class ProductProduct(models.Model):
     _inherit = 'product.product'
@@ -32,6 +32,12 @@ class ProductProduct(models.Model):
                 list_price = price
             product.lst_price = list_price
 
+    def price_compute(self, price_type, uom=False, currency=False, company=None):
+        res = super(ProductProduct, self).price_compute(price_type, uom, currency, company)
+        products = self
+        for product in products:
+            res[product.id] = product.lst_price
+        return res
 class SupplierInfo(models.Model):
     _inherit = 'product.supplierinfo'
 

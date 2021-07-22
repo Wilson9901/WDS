@@ -10,7 +10,7 @@ import logging
 # import xmlrpc.client
 # from PIL import Image
 # import io
-# import pudb
+import pudb
 
 _logger = logging.getLogger(__name__)
 
@@ -286,7 +286,8 @@ class ProductTemplate(models.Model):
             except Exception:
                 if val == self[key]:
                     to_rem.append(key)
-
+                elif not val and product.fields_get(key)[key]['type'] != 'boolean':
+                    to_rem.append(key)
         [vals.pop(key) for key in set(to_rem)]
         # find size_ in vals, only new values will exist
         new_variants = [key for key in vals.keys() if key.startswith('size_')]
@@ -344,14 +345,15 @@ class ProductTemplate(models.Model):
         input: updated product_template
         out: updated variants, set flag to filter unused products
         '''
+        pu.db
         variant_ids = self.product_variant_ids
         for idx in range(1, 4):
             if self['size_' + str(idx)]:
                 vals = self._prepare_product_product_vals(self, idx)
-                [vals.pop(key) for key in ['size', 'unit', 'is_published']]
-                default_code = vals.pop('default_code', False)
+                [vals.pop(key) for key in ['size', 'is_published']]
+                # need to match by attribute, in this case, find attr by size
                 for variant in self.product_variant_ids:
-                    if default_code and default_code == variant.default_code:
+                    if self['size_' + str(idx)] and self['size_' + str(idx)] in variant.product_template_attribute_value_ids.mapped('name'):
                         to_rem = []
                         for key, val in vals.items():
                             if val == variant[key]:
@@ -360,6 +362,7 @@ class ProductTemplate(models.Model):
                         if vals:
                             variant.write(vals)
                         variant_ids -= variant
+                        break
         # variant_ids will either be empty recordset or recordset of variants to remove
         if len(variant_ids):
             variant_ids.to_remove = True
@@ -372,7 +375,12 @@ class ProductTemplate(models.Model):
                 'name': self.vendor_name,
                 'type': 'contact',
             }]).id
-        update_fields = [('standard_price', 'price'), ('mfr_name', 'mfr_name'), ('mfr_num', 'mfr_num')]
+        update_fields = [
+            ('standard_price', 'price'),
+            ('mfr_name', 'mfr_name'),
+            ('mfr_num', 'mfr_num'),
+            ('default_code', 'product_code'),
+        ]
         if len(self.product_variant_ids) > 1:
             # match variant to pricelist, update price, mfr_name,num?
             # remove variant from variants
@@ -384,6 +392,8 @@ class ProductTemplate(models.Model):
                         for field in update_fields:
                             if variant[field[0]] != pricelist[field[1]]:
                                 vals[field[1]] = variant[field[0]]
+                        if partner_id.id != pricelist.name.id:
+                            vals['name'] = partner_id.id
                     if vals:
                         pricelist.write(vals)
                         variants -= variant
@@ -403,8 +413,6 @@ class ProductTemplate(models.Model):
                     vals[field[1]] = self[field[0]]
             if vals:
                 self.seller_ids[:1].write(vals)
-
-# cant update size/unit as unit is used to generate the unique id
 
 
 class SupplierInfo(models.Model):

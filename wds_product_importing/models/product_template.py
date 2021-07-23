@@ -162,7 +162,12 @@ class ProductTemplate(models.Model):
         # can use instead self.env.ref('uom.product_uom_unit')
         for idx in range(len(fields)):
             if fields[idx] and fields[idx]['name'] == 'image_1920' and sheet.cell_type(row_num, idx) != 0:
-                vals[fields[idx]['name']] = base_import._import_image_by_url(sheet.cell_value(row_num, idx), requests.Session(), 'image_1920', row_num)
+                try:
+                    vals[fields[idx]['name']] = base_import._import_image_by_url(sheet.cell_value(row_num, idx), requests.Session(), 'image_1920', row_num)
+                except ValueError as e:
+                    _logger.warning('Image timeout on product at row {}'.format(row_num))
+                except:
+                    _logger.warning('Unexpected error importing image on product at row {}'.format(row_num))
             elif fields[idx] and sheet.cell_type(row_num, idx) != 0:
                 val = sheet.row_values(row_num)
                 if fields[idx]['type'] in ['char', 'text', 'html']:
@@ -176,22 +181,26 @@ class ProductTemplate(models.Model):
 
     def _prepare_product_product_vals(self, product, idx):
         return {
+            'to_remove': False,
             'base_list_price': product['list_' + str(idx)],
             'standard_price': product['cost_' + str(idx)],
             'unit': product['unit_' + str(idx)],
             'unitqty': product['unitqty_' + str(idx)],
             'size': product['size_' + str(idx)],
             'is_published': True,
-            'default_code': ''.join((product['product_code'], product['unit_' + str(idx)]))
+            'default_code': ''.join((product['product_code'], product['unit_' + str(idx)], product['unitqty_' + str(idx)]))
         }
 
     def _create_attribute(self, size):
+        '''
+        create attribute.value and return it or search and return existing attribute.value
+        '''
         size_attr = self.env['product.attribute'].search([('name', '=', 'Size')], limit=1)
-        variant_value = size_attr.value_ids.search([('name', '=', size)], limit=1)
-        if not variant_value:
-            size_attr.write({
-                'value_ids': [[0, 0, {'name': size}]]
-            })
+        attribute_value = size_attr.value_ids.search([('name', '=', size)], limit=1)
+        if attribute_value:
+            return attribute_value
+        else:
+            return self.env['product.attribute.value'].create({'attribute_id': size_attr.id, 'name': size})
 
     def _create_variants_from_fields(self, templates):
         # self.search([('id', 'in', ids)])
@@ -199,17 +208,15 @@ class ProductTemplate(models.Model):
         # create variants based on size_n
         # create or fetch id of attribute
         for product in templates:
-            size_attr_vals = []
+            attribute_values = self.env['product.attribute.value']
             for idx in range(1, 4):
                 if product['size_' + str(idx)]:
-                    self._create_attribute(product['size_' + str(idx)])
-                    size_attr_vals.append(product['size_' + str(idx)])
+                    attribute_value = self._create_attribute(product['size_' + str(idx)])
+                    attribute_values += attribute_value
             # create attribute lines for values of variants
-            if size_attr_vals:
-                size_attr_ids = size_attr.value_ids.search(
-                    [('name', 'in', size_attr_vals)])
+            if attribute_values:
                 product.write({
-                    'attribute_line_ids': [[0, False, {'attribute_id': size_attr.id, 'value_ids': [[6, False, size_attr_ids.mapped('id')]]}]]
+                    'attribute_line_ids': [[0, False, {'attribute_id': size_attr.id, 'value_ids': [[6, False, attribute_values.ids]]}]]
                 })
                 for variant in product.product_variant_ids:
                     for idx in range(1, 4):
@@ -227,7 +234,7 @@ class ProductTemplate(models.Model):
                     'unitqty': product['unitqty_1'],
                     # 'size': product['size_1'],
                     'is_published': True,
-                    'default_code': ''.join((product['product_code'], product['unit_1']))
+                    'default_code': ''.join((product['product_code'], product['unit_1'], product['unitqty_1']))
                 })
 
                 product.write({
@@ -238,7 +245,7 @@ class ProductTemplate(models.Model):
             # set list price and standard price to list and cost of lowest unitqty variant
             min = product.product_variant_ids[:1]
             for variant in product.product_variant_ids:
-                if variant.unitqty < min.unitqty:
+                if variant.lst_price < min.lst_price:
                     min = variant
             product.write({
                 'seller_ids': pricelists,
@@ -257,7 +264,7 @@ class ProductTemplate(models.Model):
             }]).id
         if len(self.product_variant_ids) > 1:
             pricelists = []
-            for product in self.product_variant_ids:
+            for product in self.product_variant_ids.filtered(lambda p: p.to_remove is False):
                 pricelists.append((0, False, {'sequence': 1, 'name': partner_id, 'product_id': product.id, 'product_name': False, 'product_code': product.default_code,
                                    'currency_id': self.env.ref('base.main_company').currency_id.id, 'mfr_name': product.mfr_name, 'mfr_num': product.mfr_num,
                                    'date_start': False, 'date_end': False, 'company_id': self.env.company.id, 'min_qty': 0, 'price': product.standard_price, 'delay': 1}))
@@ -288,8 +295,10 @@ class ProductTemplate(models.Model):
                     to_rem.append(key)
                 elif not val and product.fields_get(key)[key]['type'] != 'boolean':
                     to_rem.append(key)
+
         [vals.pop(key) for key in set(to_rem)]
         # find size_ in vals, only new values will exist
+        # new_variants = [(key, val) for key, val in vals.items() if key.startswith('size_')]
         new_variants = [key for key in vals.keys() if key.startswith('size_')]
 
         if not vals:
@@ -302,31 +311,33 @@ class ProductTemplate(models.Model):
 
         # create new variants
         if len(new_variants):
+            '''
+            create new attributes and update attribute_line_ids on product
+            '''
             size_attr = self.env['product.attribute'].search([('name', '=', 'Size')], limit=1)
-            size_attr_vals = []
+            attribute_values = self.env['product.attribute.value']
+            # for key, size in enum(new_variants):
             for size in new_variants:
-                product._create_attribute(product[size])
-                size_attr_vals.append(product[size])
-            size_attr_ids = size_attr.value_ids.search([('name', 'in', size_attr_vals)])
-            attribute_line = product.env['product.template.attribute.line'].search([('product_tmpl_id', '=', product.id), ('attribute_id', '=', size_attr.id)], limit=1)
+                attribute_value = product._create_attribute(product[size])
+                attribute_values += attribute_value
+            attribute_line = product.attribute_line_ids.filtered(lambda r: r.attribute_id == size_attr)
             # variants get created here
             if attribute_line:
-                attribute_line.write({'value_ids': [[0, False, size_attr_ids.mapped('id')]]})
+                updated_pav = attribute_line.value_ids + attribute_values
+                product.write({'attribute_line_ids': [[1, attribute_line.id, {'value_ids': [[6, False, updated_pav.ids]]}]]})
             else:
                 product.write({
-                    'attribute_line_ids': [[0, False, {'attribute_id': size_attr.id, 'value_ids': [[6, False, size_attr_ids.mapped('id')]]}]]
+                    'attribute_line_ids': [[0, False, {'attribute_id': size_attr.id, 'value_ids': [[6, False, attribute_values.ids]]}]]
                 })
             # get newly created variants and update with _prepare_product_product_vals(self, num)
             for size in new_variants:
                 new_variant_vals = self._prepare_product_product_vals(product, int(size[-1]))
                 for variant in product.product_variant_ids:
+                    x = variant.product_template_attribute_value_ids.mapped('name')
+                    y = attribute_values.mapped('name')
                     if product[size] in variant.product_template_attribute_value_ids.mapped('name'):
                         variant.write(new_variant_vals)
-        
-        # # edge case that might not matter
-        # # for products w/o variant, if cost_1/list_1 changes, need to update price
-        # # after variants created/updated
-        # # list_1 and cost_1 could differ however
+
         if len(product.product_variant_ids) == 1 and ('list_1' in vals or 'cost_1' in vals):
             for field in [('list_price', 'list_1'), ('standard_price', 'cost_1')]:
                 if field[1] in vals:
@@ -336,7 +347,7 @@ class ProductTemplate(models.Model):
 
         min = product.product_variant_ids[:1]
         for variant in product.product_variant_ids:
-            if variant.unitqty < min.unitqty:
+            if variant.lst_price < min.lst_price:
                 min = variant
         product.list_price = min.lst_price
 
@@ -345,8 +356,8 @@ class ProductTemplate(models.Model):
         input: updated product_template
         out: updated variants, set flag to filter unused products
         '''
-        pu.db
         variant_ids = self.product_variant_ids
+        variant_ids.write({'to_remove': False})
         for idx in range(1, 4):
             if self['size_' + str(idx)]:
                 vals = self._prepare_product_product_vals(self, idx)
@@ -368,51 +379,10 @@ class ProductTemplate(models.Model):
             variant_ids.to_remove = True
 
     def _update_pricelists(self):
-        partner_id = self.env['res.partner'].search(
-            [('name', '=', self.vendor_name)], limit=1).id
-        if not partner_id:
-            partner_id = self.env['res.partner'].create([{
-                'name': self.vendor_name,
-                'type': 'contact',
-            }]).id
-        update_fields = [
-            ('standard_price', 'price'),
-            ('mfr_name', 'mfr_name'),
-            ('mfr_num', 'mfr_num'),
-            ('default_code', 'product_code'),
-        ]
-        if len(self.product_variant_ids) > 1:
-            # match variant to pricelist, update price, mfr_name,num?
-            # remove variant from variants
-            variants = self.product_variant_ids.filtered(lambda r: r.to_remove is False)
-            for pricelist in self.seller_ids:
-                for variant in self.product_variant_ids.filtered(lambda r: r.to_remove is False):
-                    vals = {}
-                    if pricelist.product_id.id == variant.id:
-                        for field in update_fields:
-                            if variant[field[0]] != pricelist[field[1]]:
-                                vals[field[1]] = variant[field[0]]
-                        if partner_id.id != pricelist.name.id:
-                            vals['name'] = partner_id.id
-                    if vals:
-                        pricelist.write(vals)
-                        variants -= variant
-            if len(variants):
-                # remaining variants do not have a pricelist yet
-                pricelists = []
-                for variant in variants:
-                    pricelists.append((0, False, {'sequence': 1, 'name': partner_id, 'product_id': variant.id, 'product_name': False, 'product_code': variant.default_code,
-                                                  'currency_id': self.env.ref('base.main_company').currency_id.id, 'mfr_name': variant.mfr_name, 'mfr_num': variant.mfr_num,
-                                                  'date_start': False, 'date_end': False, 'company_id': self.env.company.id, 'min_qty': 0, 'price': variant.standard_price, 'delay': 1}))
-                self.write({'seller_ids': pricelists})
-        else:
-            # case where product w/o variants updates
-            vals = {}
-            for field in update_fields:
-                if self.seller_ids and self[field[0]] != self.seller_ids[:1][field[1]]:
-                    vals[field[1]] = self[field[0]]
-            if vals:
-                self.seller_ids[:1].write(vals)
+        self.ensure_one()
+        pricelists = self._generate_pricelists()
+        self.write({'seller_ids': [(5, 0, 0)]})
+        self.write({'seller_ids': pricelists})
 
 
 class SupplierInfo(models.Model):

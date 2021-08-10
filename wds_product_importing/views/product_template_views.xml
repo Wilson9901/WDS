@@ -17,6 +17,7 @@
                 <field name="unspsc"/>
                 <field name="upc_code"/>
                 <field name="upn_code"/>
+                <field name="product_code"/>
                 <field name="__last_update"/>
             </xpath>
 

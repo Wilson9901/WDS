@@ -155,7 +155,7 @@ class ProductTemplate(models.Model):
             'purchase_line_warn': 'no-message',
             'sale_line_warn': 'no-message',
             'tracking': 'none',
-            'type': 'product',
+            'type': 'consu',
             'uom_id': self.env['uom.uom'].search([], limit=1, order='id').id,
             'uom_po_id': self.env['uom.uom'].search([], limit=1, order='id').id
         }

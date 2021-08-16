@@ -75,6 +75,16 @@ class ProductTemplate(models.Model):
     import all products from documents in the designated product folder then move attachment to different folder
     '''
 
+    # @api.model_create_multi
+    # def create(self, vals_list):
+    #     templates = super(ProductTemplate, self).create(vals_list)
+    #     return templates
+
+    # def write(self, vals):
+    #     pu.db
+    #     templates = super(ProductTemplate, self).write(vals)
+    #     return templates
+
     def _cron_import_all_products(self):
         company = self.company_id or self.env.company
         docs = company.import_folder.document_ids
@@ -148,7 +158,6 @@ class ProductTemplate(models.Model):
         output: dictionary with field name:val of non empty cells
         '''
         base_import = self.env['base_import.import']
-
         vals = {
             'categ_id': self.env.ref('product.product_category_all').id,
             'product_variant_ids': [[6, False, []]],
@@ -161,6 +170,7 @@ class ProductTemplate(models.Model):
         }
         # can use instead self.env.ref('uom.product_uom_unit')
         for idx in range(len(fields)):
+            current_field = sheet.cell_value(row_num, idx)
             if fields[idx] and fields[idx]['name'] == 'image_1920' and sheet.cell_type(row_num, idx) != 0:
                 try:
                     vals[fields[idx]['name']] = base_import._import_image_by_url(sheet.cell_value(row_num, idx), requests.Session(), 'image_1920', row_num)
@@ -177,6 +187,11 @@ class ProductTemplate(models.Model):
                         vals[fields[idx]['name']] = sheet.cell_value(row_num, idx)
                 else:
                     vals[fields[idx]['name']] = sheet.cell_value(row_num, idx)
+            elif fields[idx]:
+                if fields[idx]['type'] in ['float', 'int']:
+                    vals[fields[idx]['name']] = 0
+                else:
+                    vals[fields[idx]['name']] = False
         return vals
 
     def _prepare_product_product_vals(self, product, idx):
@@ -227,7 +242,6 @@ class ProductTemplate(models.Model):
             else:
                 # if size_(1,2,3) are empty, update product.template fields
                 product.product_variant_ids[:1].write({
-                # product.product_variant_id.write({
                     'base_list_price': product['list_1'],
                     'standard_price': product['cost_1'],
                     'unit': product['unit_1'],
@@ -293,13 +307,11 @@ class ProductTemplate(models.Model):
             except Exception:
                 if val == self[key]:
                     to_rem.append(key)
-                elif not val and product.fields_get(key)[key]['type'] != 'boolean':
-                    to_rem.append(key)
-
+                # elif not val and product.fields_get(key)[key]['type'] != 'boolean':
+                #     to_rem.append(key)
         [vals.pop(key) for key in set(to_rem)]
         # find size_ in vals, only new values will exist
-        # new_variants = [(key, val) for key, val in vals.items() if key.startswith('size_')]
-        new_variants = [key for key in vals.keys() if key.startswith('size_')]
+        new_variants = [key for key, val in vals.items() if key.startswith('size_') and val]
 
         if not vals:
             return 0
@@ -375,17 +387,11 @@ class ProductTemplate(models.Model):
                         variant_ids -= variant
                         break
         # variant_ids will either be empty recordset or recordset of variants to remove
-        if len(variant_ids):
-            variant_ids.to_remove = True
+        if len(variant_ids) and len(self.product_variant_ids) > 1:
+            variant_ids.write({'to_remove': True})
 
     def _update_pricelists(self):
         self.ensure_one()
         pricelists = self._generate_pricelists()
         self.write({'seller_ids': [(5, 0, 0)]})
         self.write({'seller_ids': pricelists})
-
-
-class SupplierInfo(models.Model):
-    _inherit = 'product.supplierinfo'
-
-    to_remove = fields.Boolean(related='product_id.to_remove')

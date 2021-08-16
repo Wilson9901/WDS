@@ -38,8 +38,11 @@ class ProductProduct(models.Model):
         for product in products:
             res[product.id] = product.lst_price
         return res
+
 class SupplierInfo(models.Model):
     _inherit = 'product.supplierinfo'
 
     mfr_num = fields.Char(string='Manufacturer Number')
     mfr_name = fields.Char(string='Manufacturer Name')
+    to_remove = fields.Boolean(related='product_id.to_remove')
+    catno = fields.Char(related='product_tmpl_id.product_code', string='Catalog Number')

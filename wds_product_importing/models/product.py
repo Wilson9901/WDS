@@ -2,7 +2,7 @@
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 from odoo import models, fields, api
-import pudb
+
 
 class ProductProduct(models.Model):
     _inherit = 'product.product'
@@ -15,7 +15,7 @@ class ProductProduct(models.Model):
     unit = fields.Char(string='Unit')
     unitqty = fields.Char(string='Unit Quantity')
     base_list_price = fields.Float(string='Variant Base Price')
-    to_remove = fields.Boolean(default=False)
+    to_remove = fields.Boolean(string='To Remove', default=False)
 
     @api.depends('list_price', 'base_list_price')
     @api.depends_context('uom')

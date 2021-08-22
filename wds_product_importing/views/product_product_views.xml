@@ -1,27 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo>
-        <record id="product_normal_form_view_inherit_wds" model="ir.ui.view">
-            <field name="name">product.normal.form.view.inherit.wds</field>
-            <field name="model">product.product</field>
-            <field name="inherit_id" ref="product.product_normal_form_view"/>
-            <field name="arch" type="xml">
-                <field name="barcode" position="after">
-                    <field name="size"/>
-                    <field name="unit"/>
-                    <field name="unitqty"/>
-                </field>
+    <record id="product_normal_form_view_inherit_wds" model="ir.ui.view">
+        <field name="name">product.normal.form.view.inherit.wds</field>
+        <field name="model">product.product</field>
+        <field name="inherit_id" ref="product.product_normal_form_view"/>
+        <field name="arch" type="xml">
+            <field name="barcode" position="after">
+                <field name="size"/>
+                <field name="unit"/>
+                <field name="unitqty"/>
             </field>
-        </record>
-
-            <record id="product_search_form_view_inherit_wds" model="ir.ui.view">
-                <field name="name">product.product.search.inherit.wds</field>
-                <field name="model">product.product</field>
-                <field name="inherit_id" ref="product.product_search_form_view"/>
-                <field name="arch" type="xml">
-                    <xpath expr="//search" position="inside">
-                        <separator/>
-                        <filter string="To Remove" name="to_remove" domain="[('to_remove', '=', True)]"/>
-                    </xpath>
-                </field>
-            </record>
+        </field>
+    </record>
 </odoo>

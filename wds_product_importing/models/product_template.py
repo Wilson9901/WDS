@@ -7,10 +7,7 @@ import base64
 import requests
 import re
 import logging
-# import xmlrpc.client
-# from PIL import Image
-# import io
-import pudb
+ 
 
 _logger = logging.getLogger(__name__)
 
@@ -71,20 +68,11 @@ class ProductTemplate(models.Model):
     unit = fields.Char(related='product_variant_id.unit')
     unitqty = fields.Char(related='product_variant_id.unitqty')
 
+    to_remove = fields.Boolean(string='To Remove', default=False)
+
     '''
     import all products from documents in the designated product folder then move attachment to different folder
     '''
-
-    # @api.model_create_multi
-    # def create(self, vals_list):
-    #     templates = super(ProductTemplate, self).create(vals_list)
-    #     return templates
-
-    # def write(self, vals):
-    #     pu.db
-    #     templates = super(ProductTemplate, self).write(vals)
-    #     return templates
-
     def _cron_import_all_products(self):
         company = self.company_id or self.env.company
         docs = company.import_folder.document_ids
@@ -99,6 +87,7 @@ class ProductTemplate(models.Model):
         '''
         company = self.company_id or self.env.company
         templates = self.env['product.template']
+        products_to_archive = self.env['product.template'].search([])
         _logger.info('importing document(s)')
         for doc in documents:
             data = base64.b64decode(doc.attachment_id.datas)
@@ -111,6 +100,7 @@ class ProductTemplate(models.Model):
                 product_to_update = self.search([('product_code', '=', vals.get('product_code'))], limit=1) if 'product_code' in vals else None
                 if product_to_update:
                     _logger.info('updating product: %s', vals.get('product_code'))
+                    products_to_archive -= product_to_update
                     product_to_update._update_product(vals)
                 else:
                     vals_to_create.append(vals)
@@ -119,6 +109,9 @@ class ProductTemplate(models.Model):
             if len(templates):
                 self._create_variants_from_fields(templates)
             doc.folder_id = company.complete_import_folder.id
+        if len(products_to_archive):
+            products_to_archive.write({'to_remove': True, 'is_published': False})
+
         _logger.info('done')
         return templates
 
@@ -299,6 +292,7 @@ class ProductTemplate(models.Model):
         # search for values
         # remove default values and values that are unchanged, product_variant_ids will cause apples to oranges warning but doesnt matter
         product = self
+        product.write({'to_remove': False, 'is_published': True})
         to_rem = ['categ_id', 'product_variant_ids', 'purchase_line_warn', 'sale_line_warn', 'tracking', 'type', 'uom_id', 'uom_po_id']
         for key, val in vals.items():
             try:
@@ -369,7 +363,7 @@ class ProductTemplate(models.Model):
         out: updated variants, set flag to filter unused products
         '''
         variant_ids = self.product_variant_ids
-        variant_ids.write({'to_remove': False})
+        variant_ids.write({'to_remove': False, 'is_published': True})
         for idx in range(1, 4):
             if self['size_' + str(idx)]:
                 vals = self._prepare_product_product_vals(self, idx)
@@ -388,7 +382,7 @@ class ProductTemplate(models.Model):
                         break
         # variant_ids will either be empty recordset or recordset of variants to remove
         if len(variant_ids) and len(self.product_variant_ids) > 1:
-            variant_ids.write({'to_remove': True})
+            variant_ids.write({'to_remove': True, 'is_published': False})
 
     def _update_pricelists(self):
         self.ensure_one()

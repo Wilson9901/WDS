@@ -7,7 +7,7 @@ import base64
 import requests
 import re
 import logging
- 
+
 
 _logger = logging.getLogger(__name__)
 
@@ -110,7 +110,7 @@ class ProductTemplate(models.Model):
                 self._create_variants_from_fields(templates)
             doc.folder_id = company.complete_import_folder.id
         if len(products_to_archive):
-            products_to_archive.write({'to_remove': True, 'is_published': False})
+            products_to_archive.write({'to_remove': True})
 
         _logger.info('done')
         return templates
@@ -292,7 +292,7 @@ class ProductTemplate(models.Model):
         # search for values
         # remove default values and values that are unchanged, product_variant_ids will cause apples to oranges warning but doesnt matter
         product = self
-        product.write({'to_remove': False, 'is_published': True})
+        product.write({'to_remove': False})
         to_rem = ['categ_id', 'product_variant_ids', 'purchase_line_warn', 'sale_line_warn', 'tracking', 'type', 'uom_id', 'uom_po_id']
         for key, val in vals.items():
             try:
@@ -363,7 +363,7 @@ class ProductTemplate(models.Model):
         out: updated variants, set flag to filter unused products
         '''
         variant_ids = self.product_variant_ids
-        variant_ids.write({'to_remove': False, 'is_published': True})
+        variant_ids.write({'to_remove': False})
         for idx in range(1, 4):
             if self['size_' + str(idx)]:
                 vals = self._prepare_product_product_vals(self, idx)
@@ -382,7 +382,7 @@ class ProductTemplate(models.Model):
                         break
         # variant_ids will either be empty recordset or recordset of variants to remove
         if len(variant_ids) and len(self.product_variant_ids) > 1:
-            variant_ids.write({'to_remove': True, 'is_published': False})
+            variant_ids.write({'to_remove': True})
 
     def _update_pricelists(self):
         self.ensure_one()

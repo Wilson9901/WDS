@@ -11,7 +11,9 @@ class ProductTemplateAttributeValue(models.Model):
         res = super(ProductTemplateAttributeValue, self)._only_active()
         # only single combination variants so mapped will always be len 1 array, use any() just in case
         # hides variant if product has to_remove or is archived
+        hidden_variants = self.env['product.template.attribute.value']
         for val in res:
             if any(val.ptav_product_variant_ids.mapped('to_remove')) or not all(val.ptav_product_variant_ids.mapped('active')):
-                res -= val
+                hidden_variants += val
+        res -= hidden_variants
         return res

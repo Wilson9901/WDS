@@ -9,6 +9,7 @@ from odoo.addons.website_sale.controllers.main import WebsiteSale
 from odoo.osv import expression
 _logger = logging.getLogger(__name__)
 
+
 class WebsiteSale(WebsiteSale):
 
     def _get_search_domain(self, search, category, attrib_values, search_in_description=True):

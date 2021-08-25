@@ -16,6 +16,8 @@ class ProductProduct(models.Model):
     unitqty = fields.Char(string='Unit Quantity')
     base_list_price = fields.Float(string='Variant Base Price')
     to_remove = fields.Boolean(string='To Remove', default=False)
+    
+    attachment_id = fields.Many2one(comodel_name='ir.attachment')
 
     @api.depends('list_price', 'base_list_price')
     @api.depends_context('uom')

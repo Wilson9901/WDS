@@ -13,7 +13,8 @@ class ProductTemplateAttributeValue(models.Model):
         # hides variant if product has to_remove or is archived
         hidden_variants = self.env['product.template.attribute.value']
         for val in res:
-            if any(val.ptav_product_variant_ids.mapped('to_remove')) or not all(val.ptav_product_variant_ids.mapped('active')):
+            # if any(val.ptav_product_variant_ids.mapped('to_remove')) or not all(val.ptav_product_variant_ids.mapped('active')):
+            if not all(val.ptav_product_variant_ids.mapped('active')):
                 hidden_variants += val
         res -= hidden_variants
         return res

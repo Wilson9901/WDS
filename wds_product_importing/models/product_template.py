@@ -70,15 +70,17 @@ class ProductTemplate(models.Model):
 
     to_remove = fields.Boolean(string='To Remove', default=False)
 
+    attachment_id = fields.Many2one(comodel_name='ir.attachment')
+
     '''
     import all products from documents in the designated product folder then move attachment to different folder
     '''
     def _cron_import_all_products(self):
         company = self.company_id or self.env.company
         docs = company.import_folder.document_ids
-        self._import_documents(docs)
+        self._import_documents(documents=docs)
 
-    def _import_documents(self, documents):
+    def _import_documents(self, documents, batch_size=80):
         '''
         input: documents
         output: product.templates, product.products, imported documents placed in completed folder
@@ -86,34 +88,45 @@ class ProductTemplate(models.Model):
         todo: create rollback and add batches
         '''
         company = self.company_id or self.env.company
-        templates = self.env['product.template']
-        products_to_archive = self.env['product.template'].search([])
         _logger.info('importing document(s)')
         for doc in documents:
             data = base64.b64decode(doc.attachment_id.datas)
             sheet = xlrd.open_workbook(file_contents=data).sheet_by_index(0)
-            vals_to_create = []
             fields = self._get_fields_from_sheet(sheet)
-            for row_num in range(1, sheet.nrows):
-                # go through sheet, creating or updating product.templates and product.products
-                vals = self._prepare_product_template_vals_from_row(sheet, row_num, fields)
-                product_to_update = self.search([('product_code', '=', vals.get('product_code'))], limit=1) if 'product_code' in vals else None
-                if product_to_update:
-                    _logger.info('updating product: %s', vals.get('product_code'))
-                    products_to_archive -= product_to_update
-                    product_to_update._update_product(vals)
-                else:
-                    vals_to_create.append(vals)
-            if vals_to_create:
-                templates += self.create(vals_to_create)
-            if len(templates):
-                self._create_variants_from_fields(templates)
+            while batch_size * doc.attachment_id.batch < sheet.nrows:
+                templates = self.env['product.template']
+                vals_to_create = []
+                current_batch = [batch_size * doc.attachment_id.batch or 1, (batch_size * doc.attachment_id.batch) + 500]
+                if current_batch[1] > sheet.nrows:
+                    current_batch[1] = sheet.nrows
+                for row_num in range(current_batch[0], current_batch[1]):
+                    # go through sheet, creating or updating product.templates and product.products
+                    vals = self.with_context(attachment_id=doc.attachment_id.id)._prepare_product_template_vals_from_row(sheet, row_num, fields)
+                    product_to_update = self.search([('product_code', '=', vals.get('product_code'))], limit=1) if 'product_code' in vals else None
+                    if product_to_update:
+                        _logger.info('updating product: %s', vals.get('product_code'))
+                        product_to_update._update_product(vals)
+                    else:
+                        vals_to_create.append(vals)
+                if vals_to_create:
+                    templates += self.create(vals_to_create)
+                if len(templates):
+                    self.with_context(attachment_id=doc.attachment_id.id)._create_variants_from_fields(templates)
+                doc.attachment_id.batch += 1
+                self.env.cr.commit()
+                '''
+                commit cursor here, pass current attachment_id to products
+                '''
             doc.folder_id = company.complete_import_folder.id
-        if len(products_to_archive):
-            products_to_archive.write({'to_remove': True})
+
+        self.env['product.template'].search([]).write({'to_remove': False})
+        self.env['product.template'].search([('attachment_id', 'not in', documents.mapped('attachment_id').ids)]).write({'to_remove': True})
+
+        self.env['product.product'].search([]).write({'to_remove': False})
+        self.env['product.product'].search([('attachment_id', 'not in', documents.mapped('attachment_id').ids)]).write({'to_remove': True})
 
         _logger.info('done')
-        return templates
+        return True
 
     def _get_fields_from_sheet(self, sheet):
         '''
@@ -159,7 +172,8 @@ class ProductTemplate(models.Model):
             'tracking': 'none',
             'type': 'consu',
             'uom_id': self.env['uom.uom'].search([], limit=1, order='id').id,
-            'uom_po_id': self.env['uom.uom'].search([], limit=1, order='id').id
+            'uom_po_id': self.env['uom.uom'].search([], limit=1, order='id').id,
+            'attachment_id': self.env.context.get('attachment_id')
         }
         # can use instead self.env.ref('uom.product_uom_unit')
         for idx in range(len(fields)):
@@ -196,7 +210,8 @@ class ProductTemplate(models.Model):
             'unitqty': product['unitqty_' + str(idx)],
             'size': product['size_' + str(idx)],
             'is_published': True,
-            'default_code': ''.join((product['product_code'], product['unit_' + str(idx)], product['unitqty_' + str(idx)]))
+            'default_code': ''.join((product['product_code'], product['unit_' + str(idx)], product['unitqty_' + str(idx)])),
+            'attachment_id': product['attachment_id'].id
         }
 
     def _create_attribute(self, size):
@@ -362,8 +377,8 @@ class ProductTemplate(models.Model):
         input: updated product_template
         out: updated variants, set flag to filter unused products
         '''
-        variant_ids = self.product_variant_ids
-        variant_ids.write({'to_remove': False})
+        # variant_ids = self.product_variant_ids
+        # variant_ids.write({'to_remove': False})
         for idx in range(1, 4):
             if self['size_' + str(idx)]:
                 vals = self._prepare_product_product_vals(self, idx)
@@ -378,11 +393,11 @@ class ProductTemplate(models.Model):
                         [vals.pop(key) for key in set(to_rem)]
                         if vals:
                             variant.write(vals)
-                        variant_ids -= variant
+                        # variant_ids -= variant
                         break
         # variant_ids will either be empty recordset or recordset of variants to remove
-        if len(variant_ids) and len(self.product_variant_ids) > 1:
-            variant_ids.write({'to_remove': True})
+        # if len(variant_ids) and len(self.product_variant_ids) > 1:
+        #     variant_ids.write({'to_remove': True})
 
     def _update_pricelists(self):
         self.ensure_one()

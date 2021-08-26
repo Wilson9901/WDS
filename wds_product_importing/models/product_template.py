@@ -9,6 +9,7 @@ import re
 import logging
 
 
+
 _logger = logging.getLogger(__name__)
 
 try:
@@ -107,9 +108,9 @@ class ProductTemplate(models.Model):
                     else:
                         vals_to_create.append(vals)
                 if vals_to_create:
+                    _logger.info('creating products in batch: %s', doc.attachment_id.batch)
                     templates += self.create(vals_to_create)
-                if len(templates):
-                    self.with_context(attachment_id=doc.attachment_id.id)._create_variants_from_fields(templates)
+                    self._create_variants_from_fields(templates)
                 doc.attachment_id.batch += 1
                 self.env.cr.commit()
                 '''
@@ -254,7 +255,8 @@ class ProductTemplate(models.Model):
                     'unitqty': product['unitqty_1'],
                     # 'size': product['size_1'],
                     'is_published': True,
-                    'default_code': ''.join((product['product_code'], product['unit_1'], product['unitqty_1']))
+                    'default_code': ''.join((product['product_code'], product['unit_1'], product['unitqty_1'])),
+                    'attachment_id': product['attachment_id'].id
                 })
 
                 product.write({
@@ -364,8 +366,8 @@ class ProductTemplate(models.Model):
 
         product._update_pricelists()
 
-        min = product.product_variant_ids[:1]
-        for variant in product.product_variant_ids:
+        min = product.product_variant_ids.filtered(lambda p: p.active)[:1]
+        for variant in product.product_variant_ids.filtered(lambda p: p.active):
             if variant.lst_price < min.lst_price:
                 min = variant
         product.list_price = min.lst_price

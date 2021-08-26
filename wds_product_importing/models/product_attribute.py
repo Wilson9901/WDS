@@ -7,7 +7,7 @@ from odoo import models, fields, api
 class ProductTemplateAttributeValue(models.Model):
     _inherit = 'product.template.attribute.value'
 
-    def _only_active(self):
+    def _only_active_wds(self):
         res = super(ProductTemplateAttributeValue, self)._only_active()
         # only single combination variants so mapped will always be len 1 array, use any() just in case
         # hides variant if product has to_remove or is archived

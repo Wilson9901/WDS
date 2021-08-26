@@ -84,8 +84,6 @@ class ProductTemplate(models.Model):
         '''
         input: documents
         output: product.templates, product.products, imported documents placed in completed folder
-
-        todo: create rollback and add batches
         '''
         company = self.company_id or self.env.company
         _logger.info('importing document(s)')

@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="size_attribute" model="product.attribute">
+        <field name="name">Size</field>
+        <field name="display_type">radio</field>
+        <field name="create_variant">always</field>
+    </record>
+
+    <record id="documents_import_folder" model="documents.folder">
+        <field name="name">Import Queue</field>
+        <field name="sequence">15</field>
+    </record>
+    <record id="base.main_company" model="res.company">
+        <field name="import_folder" ref="documents_import_folder"/>
+    </record>
+
+    <record id="documents_complete_import_folder" model="documents.folder">
+        <field name="name">Import Complete</field>
+        <field name="sequence">16</field>
+    </record>
+    <record id="base.main_company" model="res.company">
+        <field name="complete_import_folder" ref="documents_complete_import_folder"/>
+    </record>
+</odoo>

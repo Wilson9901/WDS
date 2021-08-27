@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="res_config_settings_view_form_inherit_wds" model="ir.ui.view">
+        <field name="name">res.config.settings.view.form.inherit.wds</field>
+        <field name="model">res.config.settings</field>
+        <field name="priority" eval="70"/>
+        <field name="inherit_id" ref="base.res_config_settings_view_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//div[hasclass('o_documents_block')]" position="attributes">
+                <attribute name="invisible">0</attribute>
+            </xpath>
+            <xpath expr="//div[hasclass('o_documents_block')]" position="inside">
+                <div class="row mt6 o_settings_container">
+                    <div class="col-12 col-lg-6 o_setting_box" id="default_import_folders" title="These folders are used when creating and updating products.">
+                        <div class="o_setting_left_pane"/>
+                        <div class="o_setting_right_pane">
+                            <span class="o_form_label">Importing Folders</span>
+                            <div class="text-muted">
+                                Product importing
+                            </div>
+                            <div class="content-group">
+                                <div class="row mt16">
+                                    <label string="Import Queue" for="import_folder" class="col-lg-3 o_light_label"/>
+                                    <field name="import_folder"/>
+                                </div>
+                                <div class="row">
+                                    <label string="Post Import" for="complete_import_folder" class="col-lg-3 o_light_label"/>
+                                    <field name="complete_import_folder"/>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </xpath>
+        </field>
+    </record>
+</odoo>

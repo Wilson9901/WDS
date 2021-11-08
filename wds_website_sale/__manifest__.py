@@ -23,10 +23,10 @@
     "license": "OPL-1",
     "depends": ["website_sale_wishlist", "website_sale_comparison"],
     "data": [
-        "views/res_config_settings_views_inherit.xml",
-        "views/website_sale_templates_inherit.xml",
-        "views/website_sale_wishlist_templates_inherit.xml",
-        "views/website_sale_comparison_templates_inherit.xml",
+        "views/res_config_settings_views.xml",
+        "views/website_sale_templates.xml",
+        "views/website_sale_wishlist_templates.xml",
+        "views/website_sale_comparison_templates.xml",
     ],
     "application": False,
 }

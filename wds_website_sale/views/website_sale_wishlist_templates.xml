@@ -25,7 +25,7 @@
                                     </td>
                                     <td class='text-center td-wish-btn'>
                                         <input name="product_id" t-att-value="wish.product_id.id" type="hidden"/>
-                                        <button type="button" groups="base.group_no_one,base.group_portal" role="button" class="btn btn-secondary btn-block o_wish_add mb4" >Add <span class='d-none d-md-inline'>to Cart</span></button>
+                                        <button type="button" groups="base.group_no_one,base.group_portal,base.group_user" role="button" class="btn btn-secondary btn-block o_wish_add mb4" >Add <span class='d-none d-md-inline'>to Cart</span></button>
                                     </td>
                                 </tr>
                             </t>

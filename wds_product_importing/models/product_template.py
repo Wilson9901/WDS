@@ -95,7 +95,7 @@ class ProductTemplate(models.Model):
             while batch_size * doc.attachment_id.batch < sheet.nrows:
                 templates = self.env['product.template']
                 vals_to_create = []
-                current_batch = [batch_size * doc.attachment_id.batch or 1, (batch_size * doc.attachment_id.batch) + 500]
+                current_batch = [batch_size * doc.attachment_id.batch or 1, (batch_size * doc.attachment_id.batch) + batch_size]
                 if current_batch[1] > sheet.nrows:
                     current_batch[1] = sheet.nrows
                 for row_num in range(current_batch[0], current_batch[1]):

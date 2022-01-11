@@ -16,7 +16,7 @@
         <field name="model_id" ref="product.model_product_template"/>
         <field name="state">code</field>
         <field name="code"><![CDATA[
-            records._cron_import_all_products()
+            model._cron_import_all_products()
 ]]>     </field>
         <field name="interval_number">3</field>
         <field name="interval_type">months</field>

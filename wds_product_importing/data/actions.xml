@@ -21,6 +21,7 @@
         <field name="interval_number">3</field>
         <field name="interval_type">months</field>
         <field name="numbercall">-1</field>
+        <field name="doall" eval="True"/>
     </record>
 
     <record model="ir.actions.server" id="action_import_products_document">

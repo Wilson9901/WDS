@@ -1,14 +1,14 @@
 # -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
-from odoo import models, fields, api
-
 import base64
 import requests
 import re
 import logging
+from datetime import datetime, timedelta
+import threading
 
-
+from odoo import models, fields, api
 
 _logger = logging.getLogger(__name__)
 
@@ -77,9 +77,19 @@ class ProductTemplate(models.Model):
     import all products from documents in the designated product folder then move attachment to different folder
     '''
     def _cron_import_all_products(self):
+        def schedule_next_import(thread):
+            thread.timed_out = True
+            _logger.info('reschedule import')
+
+        thread = threading.current_thread()
+        thread.timed_out = False
+        timer = threading.Timer(500.0, schedule_next_import, [thread])
+        timer.start()
+
         company = self.company_id or self.env.company
         docs = company.import_folder.document_ids
         self._import_documents(documents=docs)
+        timer.cancel()
 
     def _import_documents(self, documents, batch_size=80):
         '''
@@ -93,6 +103,8 @@ class ProductTemplate(models.Model):
             sheet = xlrd.open_workbook(file_contents=data).sheet_by_index(0)
             fields = self._get_fields_from_sheet(sheet)
             while batch_size * doc.attachment_id.batch < sheet.nrows:
+                if threading.current_thread().timed_out:
+                    return False
                 templates = self.env['product.template']
                 vals_to_create = []
                 current_batch = [batch_size * doc.attachment_id.batch or 1, (batch_size * doc.attachment_id.batch) + batch_size]
@@ -124,7 +136,7 @@ class ProductTemplate(models.Model):
         self.env['product.product'].search([]).write({'to_remove': False})
         self.env['product.product'].search([('attachment_id', 'not in', documents.mapped('attachment_id').ids)]).write({'to_remove': True})
 
-        _logger.info('done')
+        _logger.info('importing done')
         return True
 
     def _get_fields_from_sheet(self, sheet):

@@ -97,9 +97,11 @@ class ProductTemplate(models.Model):
         output: product.templates, product.products, imported documents placed in completed folder
         '''
         company = self.company_id or self.env.company
+        self = self.with_context(active_test=False, prefetch_fields=False, mail_notrack=True, tracking_disable=True, mail_activity_quick_update=False)
+        pp_noprefetch = self.env['product.product'].with_context(active_test=False, prefetch_fields=False, mail_notrack=True, tracking_disable=True, mail_activity_quick_update=False)
         _logger.info('importing document(s)')
         for doc in documents:
-            data = base64.b64decode(doc.attachment_id.datas)
+            data = base64.b64decode(doc.attachment_id.datas),
             sheet = xlrd.open_workbook(file_contents=data).sheet_by_index(0)
             fields = self._get_fields_from_sheet(sheet)
             while batch_size * doc.attachment_id.batch < sheet.nrows:
@@ -130,11 +132,11 @@ class ProductTemplate(models.Model):
                 '''
             doc.folder_id = company.complete_import_folder.id
 
-        self.env['product.template'].search([]).write({'to_remove': False})
-        self.env['product.template'].search([('attachment_id', 'not in', documents.mapped('attachment_id').ids)]).write({'to_remove': True})
+        self.search([]).write({'to_remove': False})
+        self.search([('attachment_id', 'not in', documents.mapped('attachment_id').ids)]).write({'to_remove': True})
 
-        self.env['product.product'].search([]).write({'to_remove': False})
-        self.env['product.product'].search([('attachment_id', 'not in', documents.mapped('attachment_id').ids)]).write({'to_remove': True})
+        pp_noprefetch.search([]).write({'to_remove': False})
+        pp_noprefetch.search([('attachment_id', 'not in', documents.mapped('attachment_id').ids)]).write({'to_remove': True})
 
         _logger.info('importing done')
         return True
@@ -394,7 +396,7 @@ class ProductTemplate(models.Model):
         for idx in range(1, 4):
             if self['size_' + str(idx)]:
                 vals = self._prepare_product_product_vals(self, idx)
-                [vals.pop(key) for key in ['size', 'is_published']]
+                [vals.pop(key, None) for key in ['size', 'is_published', 'attachment_id']]
                 # need to match by attribute, in this case, find attr by size
                 for variant in self.product_variant_ids:
                     if self['size_' + str(idx)] and self['size_' + str(idx)] in variant.product_template_attribute_value_ids.mapped('name'):

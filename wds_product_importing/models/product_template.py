@@ -251,7 +251,8 @@ class ProductTemplate(models.Model):
             "inserted_product_template_attribute_value": self._get_cte_inserted_product_template_attribute_value(),
             "inserted_products": self._get_cte_inserted_products(),
             "insert_product_variant_combo": self._get_cte_insert_product_variant_combo(),
-            "inserted_standard_price": self._get_cte_inserted_standard_price()
+            "inserted_standard_price": self._get_cte_inserted_standard_price(),
+            "inserted_attribute_values": self._get_cte_inserted_attribute_values()
         }
 
     def _get_cte_attribute_values(self):
@@ -289,7 +290,7 @@ class ProductTemplate(models.Model):
         return f"""
             SELECT
                 product_template.id as tmpl_id,
-                product_attribute_value.id as attr_value_id,
+                COALESCE(product_attribute_value.id,insert_attributes.id) as attr_value_id,
                 size,
                 unit,
                 unitqty,
@@ -299,9 +300,10 @@ class ProductTemplate(models.Model):
                 CONCAT(product_code, unit, unitqty) as default_code,
                 product_template.attachment_id as attachment_id
             FROM
-                ({self._get_cte_template_sizes()}) AS template_sizes
+                template_sizes
                 LEFT JOIN product_template ON template_sizes.id = product_template.id
                 LEFT JOIN product_attribute_value ON template_sizes.size = product_attribute_value.name
+                LEFT JOIN insert_attributes ON template_sizes.size = insert_attributes.name
         """
 
     def _get_cte_inserted_template_attr_lines(self):
@@ -351,8 +353,10 @@ class ProductTemplate(models.Model):
             FROM
                 inserted_products
                 JOIN line_values ON inserted_products.default_code = line_values.default_code
-                JOIN inserted_product_template_attribute_value 
-                    ON product_attribute_value_id = attr_value_id AND inserted_product_template_attribute_value.product_tmpl_id = inserted_products.product_tmpl_id 
+                JOIN inserted_product_template_attribute_value ON product_attribute_value_id = attr_value_id
+                AND inserted_product_template_attribute_value.product_tmpl_id = inserted_products.product_tmpl_id
+            ON CONFLICT (fields_id, COALESCE(company_id, 0), COALESCE(res_id, ''::character varying)) DO UPDATE SET
+                value_float = EXCLUDED.value_float
             RETURNING 
                 id, company_id, fields_id, "name", res_id, value_float
         """
@@ -439,6 +443,16 @@ class ProductTemplate(models.Model):
             ON CONFLICT DO NOTHING
         """
 
+    def _get_cte_inserted_attribute_values(self):
+        return f'''
+            INSERT INTO product_attribute_value (name, attribute_id) 
+            SELECT DISTINCT size, %(size_attr_id)s
+            FROM template_sizes
+            ON CONFLICT DO NOTHING
+            RETURNING
+                id, name
+        '''
+
     def _update_product_variants(self):
         params = {
             'template_ids': tuple(self.ids),
@@ -448,18 +462,12 @@ class ProductTemplate(models.Model):
         }
         cte_tables = self._get_cte_tables()
 
-        # CREATE MISSING ATTRIBUTE VALUES
-        query = f"""
-            INSERT INTO product_attribute_value (name, attribute_id) 
-            SELECT DISTINCT size, %(size_attr_id)s
-            FROM ({cte_tables['template_sizes']}) AS template_sizes
-            ON CONFLICT DO NOTHING
-        """
-        self._cr.execute(query, params)
-
         # CREATE/UPDATE VARIANTS
         query = f"""
-            WITH line_values AS ({cte_tables['line_values']}),
+            WITH
+                 template_sizes AS ({cte_tables['template_sizes']}),
+                 insert_attributes AS ({cte_tables['inserted_attribute_values']}),
+                 line_values AS ({cte_tables['line_values']}),
                  inserted_template_attr_lines AS ({cte_tables['inserted_template_attr_lines']}),
                  inserted_attribute_value_template_attribute_line_rel AS ({cte_tables['inserted_attribute_value_template_attribute_line_rel']}),
                  inserted_product_template_attribute_value AS ({cte_tables['inserted_product_template_attribute_value']}),
@@ -475,7 +483,6 @@ class ProductTemplate(models.Model):
         product_ids = self._cr.fetchall()
         product_ids = [product[0] for product in product_ids]
         params['new_product_ids'] = tuple(product_ids)
-
         # UPDATE COMBINATION_INDICES ON PRODUCT_PRODUCT
         query = '''
             UPDATE product_product

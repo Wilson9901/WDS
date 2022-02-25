@@ -129,7 +129,7 @@ class ProductTemplate(models.Model):
         self._import_images()
         timer.cancel()
 
-    def _import_documents(self, documents, batch_size=1000):
+    def _import_documents(self, documents, batch_size=80):
         _logger.info('Importing documents')
         self = self.with_context(active_test=False, prefetch_fields=False, mail_notrack=True, tracking_disable=True, mail_activity_quick_update=False)
         product = self.env['product.product'].with_context(active_test=False, prefetch_fields=False, mail_notrack=True, tracking_disable=True, mail_activity_quick_update=False)
@@ -212,7 +212,7 @@ class ProductTemplate(models.Model):
         '''
         self._cr.execute(update_query, params)
 
-    def _import_images(self, batch_size = 100):
+    def _import_images(self, batch_size = 80):
         base_import = self.env['base_import.import']
         if self:
             images_to_update = self.ids
@@ -462,6 +462,13 @@ class ProductTemplate(models.Model):
         }
         cte_tables = self._get_cte_tables()
 
+        self._cr.execute(f'''
+            WITH template_sizes AS ({cte_tables['template_sizes']})
+            INSERT INTO product_attribute_value (name, attribute_id) 
+            SELECT DISTINCT size, %(size_attr_id)s
+            FROM template_sizes
+            ON CONFLICT DO NOTHING''', params)
+
         # CREATE/UPDATE VARIANTS
         query = f"""
             WITH
@@ -620,6 +627,7 @@ class ProductTemplate(models.Model):
 
     def _update_pricelists(self):
         params = {
+            'field_id': self.env['ir.model.fields'].search([('name','=','standard_price'),('model','=','product.product')], limit=1).id,
             'tmpl_ids': tuple(self.ids),
             'currency_id': self.env.ref('base.main_company').currency_id.id,
             'company_id': self.env.company.id
@@ -649,7 +657,9 @@ class ProductTemplate(models.Model):
         # DELETE ALL CURRENT PRICELISTS
         delete_supplierinfo_query = '''
             DELETE FROM product_supplierinfo
-            WHERE product_tmpl_id IN %(tmpl_ids)s OR product_tmpl_id IS NULL
+            WHERE 
+                product_tmpl_id IN %(tmpl_ids)s 
+                OR product_id IN (SELECT id FROM product_product WHERE product_tmpl_id IN %(tmpl_ids)s)
         '''
         self._cr.execute(delete_supplierinfo_query, params)
 
@@ -725,6 +735,6 @@ class ProductTemplate(models.Model):
                 LEFT JOIN product_template ON product_product.product_tmpl_id = product_template.id
                 JOIN res_partner ON product_template.vendor_name = res_partner.name
                 JOIN ir_property ON res_id = CONCAT('product.product,',product_product.id)
-            WHERE num_variants > 1 AND ir_property.name = 'standard_price'
+            WHERE num_variants > 1 AND ir_property.fields_id = %(field_id)s
         '''
         self._cr.execute(insert_supplierinfo_query, params)

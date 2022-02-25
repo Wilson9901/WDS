@@ -18,7 +18,8 @@ class ProductProduct(models.Model):
     to_remove = fields.Boolean(string='To Remove', default=False)
     
     attachment_id = fields.Many2one(comodel_name='ir.attachment')
-
+    lst_price = fields.Float(store=True)
+    
     @api.depends('list_price', 'base_list_price')
     @api.depends_context('uom')
     def _compute_product_lst_price(self):

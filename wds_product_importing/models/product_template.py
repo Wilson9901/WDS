@@ -1,31 +1,56 @@
 # -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
-import base64
-import requests
-import re
 import logging
-from datetime import datetime, timedelta
+import math
 import threading
+from datetime import datetime, timedelta
 
-from odoo import models, fields, api
+import requests
+from odoo import _, fields, models
+from psycopg2.extras import execute_values
 
 _logger = logging.getLogger(__name__)
 
-try:
-    import xlrd
-    try:
-        from xlrd import xlsx
-    except ImportError:
-        xlsx = None
-except ImportError:
-    xlrd = xlsx = None
+
+def clean_data_row(row_dict, field_mapping):
+    ''' Remove unused columns and replaces column names with field names. Set empty values to None. 
+    
+    We don't omit blank values to keep a consistent data structure for the SQL injection. Default
+    values of 0 and '' are used instead of None so that the data type for the column can be inferred.
+    '''
+    cleaned_dict = {}
+    for field, vals in field_mapping.items():
+        value = row_dict[vals['name']]
+        if value:
+            if vals['type'] in ['float', 'monetary']:
+                value = float(value)
+            elif vals['type'] in ['int']:
+                value = int(value)
+        elif vals['type'] in ['float', 'monetary', 'int']:
+            value = 0
+        cleaned_dict[field] = value
+    return cleaned_dict
+
+
+class ProductTemplateAttributeLine(models.Model):
+    _inherit = 'product.template.attribute.line'
+
+    _sql_constraints = [
+        ('tmpl_attr_uniq', 'unique (attribute_id,product_tmpl_id)',
+         'You cannot use the same attribute twice on a product.')
+    ]
 
 
 class ProductTemplate(models.Model):
     _inherit = 'product.template'
 
-    name = fields.Char(string='SHORT DESCRIPTION', index=True, required=True, translate=True)
+    # product_variant_id = fields.Many2one(comodel_name='product.product', store=True)
+
+    name = fields.Char(string='SHORT DESCRIPTION',
+                       index=True,
+                       required=True,
+                       translate=True)
     description = fields.Text(string='LONG DESCRIPTION', translate=True)
 
     categ_one = fields.Char(string='CATEGORY1')
@@ -33,6 +58,8 @@ class ProductTemplate(models.Model):
     unspsc = fields.Char(string='UNSPSC Code')
 
     # image_1920 = fields.Binary(string='IMAGE')
+    image_url = fields.Char(string="IMAGE")
+    image_updated = fields.Boolean(string="Image Needs Downloading", default=False, readonly=True)
     product_url = fields.Char(string='PRODUCT URL')
     weblink = fields.Char(string='ADDITIONAL WEBLINK')
     weblink_title = fields.Char(string='ADDITIONAL WEBLINK_TITLE')
@@ -41,7 +68,7 @@ class ProductTemplate(models.Model):
     upn_code = fields.Char(string='UPN')
 
     # purchase tab
-    product_code = fields.Char(string='CATNO')
+    product_code = fields.Char(string='CATNO', index=True)
     mfr_num = fields.Char(string='MFRNO')
     mfr_name = fields.Char(string='MFRNAME')
     vendor_name = fields.Char(string='Vendor Name')
@@ -65,21 +92,20 @@ class ProductTemplate(models.Model):
     cost_3 = fields.Float(string='COST3')
     list_3 = fields.Float(string='LIST3')
 
-    size = fields.Char(related='product_variant_id.size')
-    unit = fields.Char(related='product_variant_id.unit')
-    unitqty = fields.Char(related='product_variant_id.unitqty')
+    # size = fields.Char(related='product_variant_id.size')
+    # unit = fields.Char(related='product_variant_id.unit')
+    # unitqty = fields.Char(related='product_variant_id.unitqty')
 
     to_remove = fields.Boolean(string='To Remove', default=False)
-
-    attachment_id = fields.Many2one(comodel_name='ir.attachment')
-
+    attachment_id = fields.Many2one(comodel_name='ir.attachment', index=True)
     '''
     import all products from documents in the designated product folder then move attachment to different folder
     '''
+
     def _cron_import_all_products(self):
         def schedule_next_import(thread):
             thread.timed_out = True
-            _logger.info('reschedule import')
+            _logger.info('Reschedule import')
 
         thread = threading.current_thread()
         thread.timed_out = False
@@ -91,330 +117,605 @@ class ProductTemplate(models.Model):
         self._import_documents(documents=docs)
         timer.cancel()
 
-    def _import_documents(self, documents, batch_size=80):
-        '''
-        input: documents
-        output: product.templates, product.products, imported documents placed in completed folder
-        '''
-        company = self.company_id or self.env.company
+    def _cron_import_images(self):
+        def schedule_next_import(thread):
+            thread.timed_out = True
+            _logger.info('Reschedule image download')
+
+        thread = threading.current_thread()
+        thread.timed_out = False
+        timer = threading.Timer(500.0, schedule_next_import, [thread])
+        timer.start()
+        self._import_images()
+        timer.cancel()
+
+    def _import_documents(self, documents, batch_size=1000):
+        _logger.info('Importing documents')
         self = self.with_context(active_test=False, prefetch_fields=False, mail_notrack=True, tracking_disable=True, mail_activity_quick_update=False)
-        pp_noprefetch = self.env['product.product'].with_context(active_test=False, prefetch_fields=False, mail_notrack=True, tracking_disable=True, mail_activity_quick_update=False)
-        _logger.info('importing document(s)')
+        product = self.env['product.product'].with_context(active_test=False, prefetch_fields=False, mail_notrack=True, tracking_disable=True, mail_activity_quick_update=False)
+        company = self.company_id or self.env.company
         for doc in documents:
-            data = base64.b64decode(doc.attachment_id.datas),
-            sheet = xlrd.open_workbook(file_contents=data).sheet_by_index(0)
-            fields = self._get_fields_from_sheet(sheet)
-            while batch_size * doc.attachment_id.batch < sheet.nrows:
-                if threading.current_thread().timed_out:
-                    return False
-                templates = self.env['product.template']
-                vals_to_create = []
-                current_batch = [batch_size * doc.attachment_id.batch or 1, (batch_size * doc.attachment_id.batch) + batch_size]
-                if current_batch[1] > sheet.nrows:
-                    current_batch[1] = sheet.nrows
-                for row_num in range(current_batch[0], current_batch[1]):
-                    # go through sheet, creating or updating product.templates and product.products
-                    vals = self.with_context(attachment_id=doc.attachment_id.id)._prepare_product_template_vals_from_row(sheet, row_num, fields)
-                    product_to_update = self.search([('product_code', '=', vals.get('product_code'))], limit=1) if 'product_code' in vals else None
-                    if product_to_update:
-                        _logger.info('updating product: %s', vals.get('product_code'))
-                        product_to_update._update_product(vals)
-                    else:
-                        vals_to_create.append(vals)
-                if vals_to_create:
-                    _logger.info('creating products in batch: %s', doc.attachment_id.batch)
-                    templates += self.create(vals_to_create)
-                    self._create_variants_from_fields(templates)
+            # Get table rows in dictionary form
+            data_rows = doc.attachment_id._read_as_dict_list()
+            if not data_rows:
+                continue
+            num_rows = len(data_rows)
+            # Get table column header to field mapping
+            field_mapping = self._get_fields_column_mapping(
+                data_rows[0].keys())
+            # doc.attachment_id.batch = 0 # For debugging
+            while batch_size * doc.attachment_id.batch < num_rows:
+                try:
+                    if threading.current_thread().timed_out:
+                        return False
+                except AttributeError:  # timed_out won't exist if launched from action menu and not cron
+                    pass
+                batched_rows = data_rows[batch_size*doc.attachment_id.batch:batch_size*(doc.attachment_id.batch + 1)]
+                to_create, to_update = self.with_context(attachment_id=doc.attachment_id.id)._split_rows_into_new_and_existing_products(batched_rows, field_mapping)
+                # Update existing
+                updated_products = self._optimized_update(to_update)
+                # Create new
+                new_product_templates = self._optimized_create(to_create)
+                # Post-processing
+                ## Flag products to update images
+                (new_product_templates + updated_products['to_update_images']).write({'image_updated': True})
+                ## Create / update variants
+                # products_to_update_variants = new_product_templates + updated_products['to_update_variants']
+                products_to_update_variants = new_product_templates + updated_products['updated_products']
+                if (products_to_update_variants):
+                    products_to_update_variants._update_product_variants()
+                    products_to_update_variants._update_pricelists()
+                    products_to_update_variants._set_list_price()
+                # Increase batch
+                _logger.info(f'Importing batch #{doc.attachment_id.batch} done.')
                 doc.attachment_id.batch += 1
-                self.env.cr.commit()
-                '''
-                commit cursor here, pass current attachment_id to products
-                '''
+                self._cr.commit()
             doc.folder_id = company.complete_import_folder.id
 
+        _logger.info('Import done!')
+
         self.search([]).write({'to_remove': False})
-        self.search([('attachment_id', 'not in', documents.mapped('attachment_id').ids)]).write({'to_remove': True})
+        self.search([
+            ('attachment_id', 'not in', documents.mapped('attachment_id').ids)
+        ]).write({'to_remove': True})
+        product.search([]).write({'to_remove': False})
+        product.search([
+            ('attachment_id', 'not in', documents.mapped('attachment_id').ids)
+        ]).write({'to_remove': True})
 
-        pp_noprefetch.search([]).write({'to_remove': False})
-        pp_noprefetch.search([('attachment_id', 'not in', documents.mapped('attachment_id').ids)]).write({'to_remove': True})
-
-        _logger.info('importing done')
+        self.env.ref('wds_product_importing.cron_import_images').nextcall = datetime.now() + timedelta(minutes=5)
         return True
 
-    def _get_fields_from_sheet(self, sheet):
+    def _set_list_price(self):
+        params = {'tmpl_ids': tuple(self.ids)}
+        update_query = '''
+            UPDATE
+                product_template
+            SET
+                list_price = list_prices.lst_price
+            FROM
+                (
+                    SELECT
+                        product_template.id as product_tmpl_id,
+                        MIN(product_product.lst_price) as lst_price
+                    FROM
+                        product_template
+                        JOIN product_product ON product_product.product_tmpl_id = product_template.id
+                    WHERE
+                        product_template.id IN %(tmpl_ids)s AND
+                        product_product.active = TRUE
+                    GROUP BY
+                        product_template.id
+                ) AS list_prices
+            WHERE
+                product_template.id = list_prices.product_tmpl_id
         '''
-        input: xlsx sheet, use header to match table rows
-        output: list matching column of sheet w/ corresponding field, None if no field can be found
-        need to get correct type from field here
-        fields = [None, None, ...]
-        create list of field name, string, type
-        if field in sheet, change None at index of sheet column to field at fields[index]
-        '''
-        fields = [None] * sheet.ncols
-        product_fields = []
-        for name, field in self.fields_get().items():
-            if field.get('deprecated', False) is not False:
-                continue
-            field_value = {
-                'name': name,
-                'string': field['string'].lower(),
-                'type': field['type'],
-            }
-            product_fields.append(field_value)
+        self._cr.execute(update_query, params)
 
-        for idx in range(sheet.ncols):
-            curr_col = sheet.cell_value(0, idx).lower().strip()
-            for field in product_fields:
-                if curr_col == field['name'] or curr_col == field['string']:
-                    fields[idx] = field
-                elif re.search('^image', curr_col):
-                    fields[idx] = {'name': 'image_1920', 'string': 'image', 'type': 'binary'}
-        return fields
-
-    def _prepare_product_template_vals_from_row(self, sheet, row_num, fields):
-        '''
-        input: xlsx sheet, row to create product from, list of fields(matching index with column of sheet)
-        output: dictionary with field name:val of non empty cells
-        '''
+    def _import_images(self, batch_size = 100):
         base_import = self.env['base_import.import']
-        vals = {
+        if self:
+            images_to_update = self.ids
+        else:
+            images_to_update = self.search([('image_updated','=',True)]).ids
+        num_batches = math.ceil(len(images_to_update)/batch_size)
+        for batch in range(num_batches):
+            try:
+                if threading.current_thread().timed_out:
+                    return False
+            except AttributeError:  # timed_out won't exist if launched from action menu and not cron
+                pass
+            for product in self.browse(images_to_update[batch_size*batch:batch_size*(batch+1)]):
+                try:
+                    product.image_1920 = base_import._import_image_by_url(
+                        product.image_url, requests.Session(), 'image_1920',
+                        product.id)
+                    product.image_updated = False
+                except ValueError as e:
+                    _logger.warning('Image timeout on product {}'.format(product.name))
+                except:
+                    _logger.warning('Unexpected error importing image on product {}'.format(product.name))
+            self._cr.commit()
+            _logger.info(f"Batch of {batch_size} images imported.")
+        return True
+
+    def _get_cte_tables(self):
+        return {
+            "attribute_values": self._get_cte_attribute_values(),
+            "template_sizes": self._get_cte_template_sizes(),
+            "line_values": self._get_cte_line_values(),
+            "inserted_template_attr_lines": self._get_cte_inserted_template_attr_lines(),
+            "inserted_attribute_value_template_attribute_line_rel": self._get_cte_inserted_attribute_value_template_attribute_line_rel(),
+            "inserted_product_template_attribute_value": self._get_cte_inserted_product_template_attribute_value(),
+            "inserted_products": self._get_cte_inserted_products(),
+            "insert_product_variant_combo": self._get_cte_insert_product_variant_combo(),
+            "inserted_standard_price": self._get_cte_inserted_standard_price()
+        }
+
+    def _get_cte_attribute_values(self):
+        return """
+            SELECT
+                product_attribute_value.id,
+                product_attribute_value."name",
+                product_attribute.id as attribute_id,
+                product_attribute.name as attribute_name
+            FROM
+                product_attribute_value
+                JOIN product_attribute ON product_attribute_value.attribute_id = product_attribute.id
+            WHERE product_attribute.id = %(size_attr_id)s
+        """
+
+    def _get_cte_template_sizes(self):
+        return ' UNION '.join([f"""
+            SELECT
+                id,
+                size_{idx} as size,
+                unit_{idx} as unit,
+                unitqty_{idx} as unitqty,
+                cost_{idx} as cost,
+                list_{idx} as list
+            from
+                product_template
+            WHERE
+                size_{idx} IS NOT NULL
+                AND size_{idx} <> ''
+                AND id IN %(template_ids)s
+        """ for idx in range(1, 4)
+        ])
+
+    def _get_cte_line_values(self):
+        return f"""
+            SELECT
+                product_template.id as tmpl_id,
+                product_attribute_value.id as attr_value_id,
+                size,
+                unit,
+                unitqty,
+                cost,
+                list,
+                product_code,
+                CONCAT(product_code, unit, unitqty) as default_code,
+                product_template.attachment_id as attachment_id
+            FROM
+                ({self._get_cte_template_sizes()}) AS template_sizes
+                LEFT JOIN product_template ON template_sizes.id = product_template.id
+                LEFT JOIN product_attribute_value ON template_sizes.size = product_attribute_value.name
+        """
+
+    def _get_cte_inserted_template_attr_lines(self):
+        return """
+            INSERT INTO
+                product_template_attribute_line (active, attribute_id, product_tmpl_id)
+            SELECT
+                DISTINCT TRUE,
+                attribute_values.attribute_id,
+                product_template.id
+            FROM
+                (
+                    SELECT
+                        product_attribute_value.id,
+                        product_attribute_value."name",
+                        product_attribute.id as attribute_id,
+                        product_attribute.name as attribute_name
+                    FROM
+                        (
+                            product_attribute_value
+                            JOIN product_attribute ON product_attribute_value.attribute_id = product_attribute.id
+                        )
+                    WHERE
+                        product_attribute.id = %(size_attr_id)s
+                ) AS attribute_values
+                INNER JOIN line_values ON line_values.attr_value_id = attribute_values.id
+                JOIN product_template ON line_values.tmpl_id = product_template.id 
+            ON CONFLICT ON CONSTRAINT product_template_attribute_line_tmpl_attr_uniq DO
+            UPDATE
+            SET
+                active = TRUE RETURNING id,
+                attribute_id,
+                product_tmpl_id
+        """
+
+    def _get_cte_inserted_standard_price(self):
+        return """
+            INSERT INTO
+                ir_property (company_id, fields_id, "name", res_id, "type", value_float)
+            SELECT
+                %(company_id)s,
+                %(field_id)s,
+                'standard_price',
+                CONCAT('product.product,', inserted_products.id),
+                'float',
+                line_values.cost
+            FROM
+                inserted_products
+                JOIN line_values ON inserted_products.default_code = line_values.default_code
+                JOIN inserted_product_template_attribute_value 
+                    ON product_attribute_value_id = attr_value_id AND inserted_product_template_attribute_value.product_tmpl_id = inserted_products.product_tmpl_id 
+            RETURNING 
+                id, company_id, fields_id, "name", res_id, value_float
+        """
+
+    def _get_cte_insert_product_variant_combo(self):
+        return """
+            INSERT INTO
+                product_variant_combination (
+                    product_product_id,
+                    product_template_attribute_value_id
+                )
+            SELECT
+                inserted_products.id,
+                inserted_product_template_attribute_value.id
+            FROM
+                inserted_products
+                JOIN line_values ON inserted_products.default_code = line_values.default_code
+                JOIN inserted_product_template_attribute_value ON product_attribute_value_id = attr_value_id
+                AND inserted_product_template_attribute_value.product_tmpl_id = inserted_products.product_tmpl_id
+        """
+
+    def _get_cte_inserted_products(self):
+        return """
+            INSERT INTO
+                product_product (product_tmpl_id, to_remove, base_list_price, unit, unitqty, size, attachment_id, active, default_code)
+            SELECT DISTINCT ON(default_code) 
+                tmpl_id, FALSE, list, unit, unitqty, size, attachment_id, TRUE, line_values.default_code
+            FROM
+                line_values 
+            ON CONFLICT ON CONSTRAINT product_product_default_code_unique 
+            DO UPDATE SET
+                to_remove = FALSE,
+                base_list_price = EXCLUDED.base_list_price,
+                size = EXCLUDED.size,
+                attachment_id = EXCLUDED.attachment_id,
+                active = TRUE 
+            RETURNING id,
+                product_tmpl_id,
+                default_code
+        """
+
+    def _get_cte_inserted_product_template_attribute_value(self):
+        return """
+            INSERT INTO
+                product_template_attribute_value (
+                    attribute_line_id,
+                    price_extra,
+                    product_attribute_value_id,
+                    ptav_active,
+                    product_tmpl_id,
+                    attribute_id
+                )
+            SELECT DISTINCT 
+                inserted_template_attr_lines.id,
+                0,
+                attr_value_id,
+                TRUE,
+                inserted_template_attr_lines.product_tmpl_id,
+                %(size_attr_id)s
+            FROM
+                inserted_template_attr_lines
+                JOIN line_values ON inserted_template_attr_lines.product_tmpl_id = line_values.tmpl_id 
+            ON CONFLICT DO NOTHING 
+            RETURNING 
+                id,
+                attribute_line_id,
+                product_attribute_value_id,
+                product_tmpl_id
+        """
+
+    def _get_cte_inserted_attribute_value_template_attribute_line_rel(self):
+        return """
+            INSERT INTO
+                product_attribute_value_product_template_attribute_line_rel (
+                    product_template_attribute_line_id,
+                    product_attribute_value_id
+                )
+            SELECT
+                id,
+                attr_value_id
+            FROM
+                inserted_template_attr_lines
+                JOIN line_values ON inserted_template_attr_lines.product_tmpl_id = line_values.tmpl_id 
+            ON CONFLICT DO NOTHING
+        """
+
+    def _update_product_variants(self):
+        params = {
+            'template_ids': tuple(self.ids),
+            'size_attr_id': self.env.ref('wds_product_importing.size_attribute').id,
+            'field_id': self.env['ir.model.fields'].search([('name','=','standard_price'),('model','=','product.product')], limit=1).id,
+            'company_id': self.env.company.id
+        }
+        cte_tables = self._get_cte_tables()
+
+        # CREATE MISSING ATTRIBUTE VALUES
+        query = f"""
+            INSERT INTO product_attribute_value (name, attribute_id) 
+            SELECT DISTINCT size, %(size_attr_id)s
+            FROM ({cte_tables['template_sizes']}) AS template_sizes
+            ON CONFLICT DO NOTHING
+        """
+        self._cr.execute(query, params)
+
+        # CREATE/UPDATE VARIANTS
+        query = f"""
+            WITH line_values AS ({cte_tables['line_values']}),
+                 inserted_template_attr_lines AS ({cte_tables['inserted_template_attr_lines']}),
+                 inserted_attribute_value_template_attribute_line_rel AS ({cte_tables['inserted_attribute_value_template_attribute_line_rel']}),
+                 inserted_product_template_attribute_value AS ({cte_tables['inserted_product_template_attribute_value']}),
+                 inserted_products AS ({cte_tables['inserted_products']}),
+                 insert_product_variant_combo AS ({cte_tables['insert_product_variant_combo']}),
+                 inserted_standard_price AS ({cte_tables['inserted_standard_price']})
+            SELECT
+                id
+            FROM
+                inserted_products
+        """
+        self._cr.execute(query, params)
+        product_ids = self._cr.fetchall()
+        product_ids = [product[0] for product in product_ids]
+        params['new_product_ids'] = tuple(product_ids)
+
+        # UPDATE COMBINATION_INDICES ON PRODUCT_PRODUCT
+        query = '''
+            UPDATE product_product
+            SET combination_indices = combination_to_write.combination_indices
+            FROM 
+                (
+                    SELECT
+                        product_product.id as id,
+                        STRING_AGG(
+                            product_variant_combination.product_template_attribute_value_id :: VARCHAR,
+                            ','
+                        ) AS combination_indices
+                    FROM
+                        product_product
+                        JOIN product_variant_combination ON product_product.id = product_variant_combination.product_product_id
+                    WHERE
+                        id IN %(new_product_ids)s
+                    GROUP BY
+                        product_product.id
+                ) AS combination_to_write
+            WHERE product_product.id = combination_to_write.id
+        '''
+        self._cr.execute(query, params)
+
+        return True
+
+    def _get_fields_column_mapping(self, headers):
+        fields = self.fields_get()
+        field_strings = {v['string']: f for f, v in fields.items()}
+        field_strings_lower = {v['string'].lower(): f for f, v in fields.items()}
+        mapping = {}
+        for header in headers:
+            mapped_field = field_strings.get(header.strip(),False) or \
+                            field_strings_lower.get(header.lower().strip(),False) or \
+                            fields.get(header.lower().strip(),{}).get('name',False) or \
+                            False
+            if mapped_field:
+                mapping[mapped_field] = {
+                    'name': header,
+                    'type': fields[mapped_field]['type']
+                }
+        return mapping
+
+    def _split_rows_into_new_and_existing_products(self, rows, mapping):
+        ''' Parse a list of rows and splits them into existing and new products'''
+        to_update = {}
+        to_create = []
+        for row in rows:
+            product = self.search([('product_code', '=', row.get(mapping['product_code']['name']))], limit=1)
+            data = clean_data_row(row, mapping)
+            if product:
+                to_update[product.id] = data
+            else:
+                data.update(self._extra_import_create_vals())
+                to_create.append(data)
+        return to_create, to_update
+
+    def _extra_import_create_vals(self):
+        return {
             'categ_id': self.env.ref('product.product_category_all').id,
-            'product_variant_ids': [[6, False, []]],
+            # 'product_variant_ids': [[6, False, []]],
             'purchase_line_warn': 'no-message',
             'sale_line_warn': 'no-message',
             'tracking': 'none',
             'type': 'consu',
-            'uom_id': self.env['uom.uom'].search([], limit=1, order='id').id,
-            'uom_po_id': self.env['uom.uom'].search([], limit=1, order='id').id,
-            'attachment_id': self.env.context.get('attachment_id')
+            'uom_id': self.env.ref('uom.product_uom_unit').id,
+            'uom_po_id': self.env.ref('uom.product_uom_unit').id,
+            'attachment_id': self.env.context.get('attachment_id', None),
+            'active': True,
+            'is_published': True
         }
-        # can use instead self.env.ref('uom.product_uom_unit')
-        for idx in range(len(fields)):
-            current_field = sheet.cell_value(row_num, idx)
-            if fields[idx] and fields[idx]['name'] == 'image_1920' and sheet.cell_type(row_num, idx) != 0:
-                try:
-                    vals[fields[idx]['name']] = base_import._import_image_by_url(sheet.cell_value(row_num, idx), requests.Session(), 'image_1920', row_num)
-                except ValueError as e:
-                    _logger.warning('Image timeout on product at row {}'.format(row_num))
-                except:
-                    _logger.warning('Unexpected error importing image on product at row {}'.format(row_num))
-            elif fields[idx] and sheet.cell_type(row_num, idx) != 0:
-                val = sheet.row_values(row_num)
-                if fields[idx]['type'] in ['char', 'text', 'html']:
-                    try:
-                        vals[fields[idx]['name']] = str(int(sheet.cell_value(row_num, idx)))
-                    except Exception:
-                        vals[fields[idx]['name']] = sheet.cell_value(row_num, idx)
-                else:
-                    vals[fields[idx]['name']] = sheet.cell_value(row_num, idx)
-            elif fields[idx]:
-                if fields[idx]['type'] in ['float', 'int']:
-                    vals[fields[idx]['name']] = 0
-                else:
-                    vals[fields[idx]['name']] = False
-        return vals
 
-    def _prepare_product_product_vals(self, product, idx):
+    def _optimized_update(self, vals_dict):
+        Product = self.env['product.template']
+        if not vals_dict:
+            return {'to_update_variants': Product, 'to_update_images': Product, 'updated_products': Product}
+        # Step 0: Preprocessing
+        fields = list(list(vals_dict.values())[0].keys())
+        fields.append('id')
+        values = [
+            tuple(list(vals.values()) + [id])
+            for id, vals in vals_dict.items()
+        ]
+
+        # Step 1: Read fields that we need to know if they change
+        fields_to_check = ['size_1', 'size_2', 'size_3', 'image_url']
+        product_ids = tuple(vals_dict.keys())
+        init_search_query = f"SELECT {', '.join(['id']+fields_to_check)} FROM product_template WHERE id IN %s ORDER BY id"
+        self._cr.execute(init_search_query, (product_ids, ))
+        init_values = self._cr.fetchall()
+
+        # Step 2: Update
+        set_params = ', '.join([f'{f} = payload.{f}' for f in fields])
+        bulk_update_query = f'''
+            UPDATE product_template
+            SET {set_params}
+            FROM (VALUES %s) AS payload ({', '.join(fields)}) 
+            WHERE product_template.id = payload.id
+        '''
+        execute_values(self._cr, bulk_update_query, values)
+
+        # Step 3: Read those same fields
+        self._cr.execute(init_search_query, (product_ids, ))
+        final_values = self._cr.fetchall()
+
+        # Step 4: For all fields we care about that changed, determine which ones need additional computation
+        size_indexes = range(1, 4)
+        update_images = [
+            i[1][0] for i in zip(init_values, final_values)
+            if i[0][4] != i[1][4] and i[1][4]
+        ]
+        update_sizes = [
+            i[1][0] for i in zip(init_values, final_values)
+            if any(i[0][size] != i[1][size] and i[1][size]
+                   for size in size_indexes)
+        ]
         return {
-            'to_remove': False,
-            'base_list_price': product['list_' + str(idx)],
-            'standard_price': product['cost_' + str(idx)],
-            'unit': product['unit_' + str(idx)],
-            'unitqty': product['unitqty_' + str(idx)],
-            'size': product['size_' + str(idx)],
-            'is_published': True,
-            'default_code': ''.join((product['product_code'], product['unit_' + str(idx)], product['unitqty_' + str(idx)])),
-            'attachment_id': product['attachment_id'].id
+            'to_update_variants': Product.browse(update_sizes),
+            'to_update_images': Product.browse(update_images),
+            'updated_products': Product.browse(product_ids)
         }
 
-    def _create_attribute(self, size):
-        '''
-        create attribute.value and return it or search and return existing attribute.value
-        '''
-        size_attr = self.env['product.attribute'].search([('name', '=', 'Size')], limit=1)
-        attribute_value = size_attr.value_ids.search([('name', '=', size)], limit=1)
-        if attribute_value:
-            return attribute_value
-        else:
-            return self.env['product.attribute.value'].create({'attribute_id': size_attr.id, 'name': size})
-
-    def _create_variants_from_fields(self, templates):
-        # self.search([('id', 'in', ids)])
-        size_attr = self.env['product.attribute'].search([('name', '=', 'Size')], limit=1)
-        # create variants based on size_n
-        # create or fetch id of attribute
-        for product in templates:
-            attribute_values = self.env['product.attribute.value']
-            for idx in range(1, 4):
-                if product['size_' + str(idx)]:
-                    attribute_value = self._create_attribute(product['size_' + str(idx)])
-                    attribute_values += attribute_value
-            # create attribute lines for values of variants
-            if attribute_values:
-                product.write({
-                    'attribute_line_ids': [[0, False, {'attribute_id': size_attr.id, 'value_ids': [[6, False, attribute_values.ids]]}]]
-                })
-                for variant in product.product_variant_ids:
-                    for idx in range(1, 4):
-                        # variant should only have one tag, but in case multiple, using mapped
-                        if product['size_' + str(idx)] and product['size_' + str(idx)] in variant.product_template_attribute_value_ids.mapped('name'):
-                            vals = self._prepare_product_product_vals(product, idx)
-                            variant.write(vals)
-            else:
-                # if size_(1,2,3) are empty, update product.template fields
-                product.product_variant_ids[:1].write({
-                    'base_list_price': product['list_1'],
-                    'standard_price': product['cost_1'],
-                    'unit': product['unit_1'],
-                    'unitqty': product['unitqty_1'],
-                    # 'size': product['size_1'],
-                    'is_published': True,
-                    'default_code': ''.join((product['product_code'], product['unit_1'], product['unitqty_1'])),
-                    'attachment_id': product['attachment_id'].id
-                })
-
-                product.write({
-                    'standard_price': product['cost_1']
-                })
-
-            pricelists = product._generate_pricelists()
-            # set list price and standard price to list and cost of lowest unitqty variant
-            min = product.product_variant_ids[:1]
-            for variant in product.product_variant_ids:
-                if variant.lst_price < min.lst_price:
-                    min = variant
-            product.write({
-                'seller_ids': pricelists,
-                'is_published': True,
-                'list_price': min.lst_price
-            })
-        return templates
-
-    def _generate_pricelists(self):
-        partner_id = self.env['res.partner'].search(
-            [('name', '=', self.vendor_name)], limit=1).id
-        if not partner_id:
-            partner_id = self.env['res.partner'].create([{
-                'name': self.vendor_name,
-                'type': 'contact',
-            }]).id
-        if len(self.product_variant_ids) > 1:
-            pricelists = []
-            for product in self.product_variant_ids.filtered(lambda p: p.to_remove is False):
-                pricelists.append((0, False, {'sequence': 1, 'name': partner_id, 'product_id': product.id, 'product_name': False, 'product_code': product.default_code,
-                                   'currency_id': self.env.ref('base.main_company').currency_id.id, 'mfr_name': product.mfr_name, 'mfr_num': product.mfr_num,
-                                   'date_start': False, 'date_end': False, 'company_id': self.env.company.id, 'min_qty': 0, 'price': product.standard_price, 'delay': 1}))
-            return pricelists
-        else:
-            return [(0, False, {'sequence': 1, 'name': partner_id, 'product_id': False, 'product_name': False, 'product_code': self.default_code,
-                    'currency_id': self.env.ref('base.main_company').currency_id.id, 'mfr_name': self.mfr_name, 'mfr_num': self.mfr_num,
-                    'date_start': False, 'date_end': False, 'company_id': self.env.company.id, 'min_qty': 0, 'price': self.cost_1, 'delay': 1})]
-
-    def _update_product(self, vals):
-        '''
-        input: product to update is self, value dict with product variants/product to update
-        output: update product/variant
-        update template, update variants, unlink old variant if variants change, create new variant?
-        '''
-        self.ensure_one()
-        # ids to update: self.product_variant_ids
-        # search for values
-        # remove default values and values that are unchanged, product_variant_ids will cause apples to oranges warning but doesnt matter
-        product = self
-        product.write({'to_remove': False})
-        to_rem = ['categ_id', 'product_variant_ids', 'purchase_line_warn', 'sale_line_warn', 'tracking', 'type', 'uom_id', 'uom_po_id']
-        for key, val in vals.items():
-            try:
-                if val == self[key].id:
-                    to_rem.append(key)
-            except Exception:
-                if val == self[key]:
-                    to_rem.append(key)
-                # elif not val and product.fields_get(key)[key]['type'] != 'boolean':
-                #     to_rem.append(key)
-        [vals.pop(key) for key in set(to_rem)]
-        # find size_ in vals, only new values will exist
-        new_variants = [key for key, val in vals.items() if key.startswith('size_') and val]
-
-        if not vals:
-            return 0
-
-        product.write(vals)
-
-        # update variants
-        product._update_variants()
-
-        # create new variants
-        if len(new_variants):
-            '''
-            create new attributes and update attribute_line_ids on product
-            '''
-            size_attr = self.env['product.attribute'].search([('name', '=', 'Size')], limit=1)
-            attribute_values = self.env['product.attribute.value']
-            # for key, size in enum(new_variants):
-            for size in new_variants:
-                attribute_value = product._create_attribute(product[size])
-                attribute_values += attribute_value
-            attribute_line = product.attribute_line_ids.filtered(lambda r: r.attribute_id == size_attr)
-            # variants get created here
-            if attribute_line:
-                updated_pav = attribute_line.value_ids + attribute_values
-                product.write({'attribute_line_ids': [[1, attribute_line.id, {'value_ids': [[6, False, updated_pav.ids]]}]]})
-            else:
-                product.write({
-                    'attribute_line_ids': [[0, False, {'attribute_id': size_attr.id, 'value_ids': [[6, False, attribute_values.ids]]}]]
-                })
-            # get newly created variants and update with _prepare_product_product_vals(self, num)
-            for size in new_variants:
-                new_variant_vals = self._prepare_product_product_vals(product, int(size[-1]))
-                for variant in product.product_variant_ids:
-                    x = variant.product_template_attribute_value_ids.mapped('name')
-                    y = attribute_values.mapped('name')
-                    if product[size] in variant.product_template_attribute_value_ids.mapped('name'):
-                        variant.write(new_variant_vals)
-
-        if len(product.product_variant_ids) == 1 and ('list_1' in vals or 'cost_1' in vals):
-            for field in [('list_price', 'list_1'), ('standard_price', 'cost_1')]:
-                if field[1] in vals:
-                    product.write({field[0]: vals[field[1]]})
-
-        product._update_pricelists()
-
-        min = product.product_variant_ids.filtered(lambda p: p.active)[:1]
-        for variant in product.product_variant_ids.filtered(lambda p: p.active):
-            if variant.lst_price < min.lst_price:
-                min = variant
-        product.list_price = min.lst_price
-
-    def _update_variants(self):
-        '''
-        input: updated product_template
-        out: updated variants, set flag to filter unused products
-        '''
-        # variant_ids = self.product_variant_ids
-        # variant_ids.write({'to_remove': False})
-        for idx in range(1, 4):
-            if self['size_' + str(idx)]:
-                vals = self._prepare_product_product_vals(self, idx)
-                [vals.pop(key, None) for key in ['size', 'is_published', 'attachment_id']]
-                # need to match by attribute, in this case, find attr by size
-                for variant in self.product_variant_ids:
-                    if self['size_' + str(idx)] and self['size_' + str(idx)] in variant.product_template_attribute_value_ids.mapped('name'):
-                        to_rem = []
-                        for key, val in vals.items():
-                            if val == variant[key]:
-                                to_rem.append(key)
-                        [vals.pop(key) for key in set(to_rem)]
-                        if vals:
-                            variant.write(vals)
-                        # variant_ids -= variant
-                        break
-        # variant_ids will either be empty recordset or recordset of variants to remove
-        # if len(variant_ids) and len(self.product_variant_ids) > 1:
-        #     variant_ids.write({'to_remove': True})
+    def _optimized_create(self, vals_list):
+        Product = self.env['product.template']
+        if not vals_list:
+            return Product
+        fields = list(vals_list[0].keys())
+        for idx, val in enumerate(vals_list):
+            vals_list[idx] = [v for k, v in val.items()]
+        query_create_templates = f"INSERT INTO product_template ( {', '.join(fields)} ) VALUES %s RETURNING id"
+        execute_values(self._cr, query_create_templates, vals_list)
+        tmpl_ids = self._cr.fetchall()
+        ids = [v[0] for v in tmpl_ids]
+        return Product.browse(ids)
 
     def _update_pricelists(self):
-        self.ensure_one()
-        pricelists = self._generate_pricelists()
-        self.write({'seller_ids': [(5, 0, 0)]})
-        self.write({'seller_ids': pricelists})
+        params = {
+            'tmpl_ids': tuple(self.ids),
+            'currency_id': self.env.ref('base.main_company').currency_id.id,
+            'company_id': self.env.company.id
+        }
+        # GENERATE ANY NEW PARTNERS
+        create_partner_query = '''
+            INSERT INTO res_partner
+                (name, type, display_name, active)
+            SELECT
+                vendor_name, 'contact', vendor_name, TRUE
+            FROM
+                (
+                    SELECT DISTINCT 
+                        vendor_name,
+                        res_partner.id as partner_id
+                    FROM
+                        product_template
+                        LEFT JOIN res_partner ON res_partner.name = product_template.vendor_name
+                    WHERE
+                        product_template.id IN %(tmpl_ids)s
+                ) as vendors
+            WHERE
+                vendor_name <> '' AND partner_id IS NULL
+        '''
+        self._cr.execute(create_partner_query, params)
+
+        # DELETE ALL CURRENT PRICELISTS
+        delete_supplierinfo_query = '''
+            DELETE FROM product_supplierinfo
+            WHERE product_tmpl_id IN %(tmpl_ids)s OR product_tmpl_id IS NULL
+        '''
+        self._cr.execute(delete_supplierinfo_query, params)
+
+        # CREATE NEW PRICELISTS
+        # 1) First, handle product templates with only a single variant
+        insert_supplierinfo_query = '''
+            INSERT INTO product_supplierinfo
+                (sequence, name, product_tmpl_id, product_name, product_code, currency_id, mfr_name, mfr_num, date_start, date_end, company_id, min_qty, price, delay)
+            SELECT
+                1 as sequence,
+                res_partner.id as name, 
+                product_template.id as product_tmpl_id,
+                NULL as product_name,
+                product_template.default_code as product_code,
+                %(currency_id)s as currency_id,
+                product_template.mfr_name as mfr_name,
+                product_template.mfr_num as mfr_num,
+                NULL as date_start,
+                NULL as date_end,
+                %(company_id)s as company_id,
+                0 as min_qty,
+                product_template.cost_1 as price,
+                1 as delay
+            FROM
+                (
+                    SELECT
+                        product_product.product_tmpl_id,
+                        COUNT(product_product.product_tmpl_id) as num_variants
+                    FROM
+                        product_template 
+                        JOIN res_partner ON product_template.vendor_name = res_partner.name
+                        JOIN product_product ON product_template.id = product_product.product_tmpl_id
+                    WHERE product_template.id IN %(tmpl_ids)s
+                    GROUP BY product_product.product_tmpl_id
+                ) AS product_variant_counts
+                JOIN product_template ON product_tmpl_id = product_template.id
+                JOIN res_partner ON product_template.vendor_name = res_partner.name
+            WHERE num_variants = 1
+        '''
+        self._cr.execute(insert_supplierinfo_query, params)
+        # 2) Handle products with multiple variants
+        insert_supplierinfo_query = '''
+            INSERT INTO product_supplierinfo
+                (sequence, name, product_id, product_name, product_code, currency_id, mfr_name, mfr_num, date_start, date_end, company_id, min_qty, price, delay)
+            SELECT
+                1 as sequence,
+                res_partner.id as name, 
+                product_product.id as product_id,
+                NULL as product_name,
+                product_template.default_code as product_code,
+                %(currency_id)s as currency_id,
+                product_template.mfr_name as mfr_name,
+                product_template.mfr_num as mfr_num,
+                NULL as date_start,
+                NULL as date_end,
+                %(company_id)s as company_id,
+                0 as min_qty,
+                ir_property.value_float as price,
+                1 as delay
+            FROM
+                (
+                    SELECT
+                        product_product.product_tmpl_id,
+                        COUNT(product_product.product_tmpl_id) as num_variants
+                    FROM
+                        product_template JOIN res_partner ON product_template.vendor_name = res_partner.name
+                        JOIN product_product ON product_template.id = product_product.product_tmpl_id
+                    WHERE product_template.id IN %(tmpl_ids)s
+                    GROUP BY
+                        product_product.product_tmpl_id
+                ) AS product_variant_counts
+                JOIN product_product ON product_variant_counts.product_tmpl_id = product_product.product_tmpl_id
+                LEFT JOIN product_template ON product_product.product_tmpl_id = product_template.id
+                JOIN res_partner ON product_template.vendor_name = res_partner.name
+                JOIN ir_property ON res_id = CONCAT('product.product,',product_product.id)
+            WHERE num_variants > 1 AND ir_property.name = 'standard_price'
+        '''
+        self._cr.execute(insert_supplierinfo_query, params)

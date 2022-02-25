@@ -106,6 +106,7 @@ class ProductTemplate(models.Model):
         def schedule_next_import(thread):
             thread.timed_out = True
             _logger.info('Reschedule import')
+            self.env.ref('wds_product_importing.cron_import_product_documents').nextcall = datetime.now() + timedelta(minutes=1)
 
         thread = threading.current_thread()
         thread.timed_out = False
@@ -121,6 +122,7 @@ class ProductTemplate(models.Model):
         def schedule_next_import(thread):
             thread.timed_out = True
             _logger.info('Reschedule image download')
+            self.env.ref('wds_product_importing.cron_import_images').nextcall = datetime.now() + timedelta(minutes=1)
 
         thread = threading.current_thread()
         thread.timed_out = False

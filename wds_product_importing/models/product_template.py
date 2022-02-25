@@ -219,6 +219,7 @@ class ProductTemplate(models.Model):
         else:
             images_to_update = self.search([('image_updated','=',True)]).ids
         num_batches = math.ceil(len(images_to_update)/batch_size)
+        _logger.info(f"Started importing images. {len(images_to_update)} images to import.")
         for batch in range(num_batches):
             try:
                 if threading.current_thread().timed_out:
@@ -237,6 +238,7 @@ class ProductTemplate(models.Model):
                     _logger.warning('Unexpected error importing image on product {}'.format(product.name))
             self._cr.commit()
             _logger.info(f"Batch of {batch_size} images imported.")
+        _logger.info(f"Image import done.")
         return True
 
     def _get_cte_tables(self):

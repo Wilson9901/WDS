@@ -27,6 +27,8 @@ def clean_data_row(row_dict, field_mapping):
                 value = float(value)
             elif vals['type'] in ['int']:
                 value = int(value)
+            elif vals['type'] in ['text','char']:
+                value = str(value)
         elif vals['type'] in ['float', 'monetary', 'int']:
             value = 0
         cleaned_dict[field] = value

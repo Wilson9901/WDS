@@ -10,6 +10,7 @@
                 <field name="categ_one"/>
                 <field name="categ_two"/>
                 <field name="product_url" widget="url"/>
+                <field name="image_url" widget="url"/>
                 <field name="weblink_title"/>
                 <field name="weblink" widget="url"/>
                 <field name="unspsc"/>

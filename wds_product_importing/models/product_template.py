@@ -57,7 +57,7 @@ class ProductTemplate(models.Model):
 
     categ_one = fields.Char(string='CATEGORY1')
     categ_two = fields.Char(string='CATEGORY2')
-    unspsc = fields.Char(string='UNSPSC Code')
+    unspsc = fields.Char(string='UNSPSC')
 
     # image_1920 = fields.Binary(string='IMAGE')
     image_url = fields.Char(string="IMAGE")
@@ -133,7 +133,7 @@ class ProductTemplate(models.Model):
         self._import_images()
         timer.cancel()
 
-    def _import_documents(self, documents, batch_size=80):
+    def _import_documents(self, documents, batch_size=30):
         _logger.info('Importing documents')
         self = self.with_context(active_test=False, prefetch_fields=False, mail_notrack=True, tracking_disable=True, mail_activity_quick_update=False)
         product = self.env['product.product'].with_context(active_test=False, prefetch_fields=False, mail_notrack=True, tracking_disable=True, mail_activity_quick_update=False)
@@ -192,6 +192,17 @@ class ProductTemplate(models.Model):
 
     def _set_list_price(self):
         params = {'tmpl_ids': tuple(self.ids)}
+        update_query = '''
+            UPDATE
+                product_product
+            SET
+                lst_price = product.base_list_price
+            FROM
+                product_product as product
+            WHERE
+                product_product.id = product.id AND product.product_tmpl_id IN %(tmpl_ids)s
+        '''
+        self._cr.execute(update_query, params)
         update_query = '''
             UPDATE
                 product_template
@@ -284,8 +295,8 @@ class ProductTemplate(models.Model):
             from
                 product_template
             WHERE
-                size_{idx} IS NOT NULL
-                AND size_{idx} <> ''
+                unitqty_{idx} IS NOT NULL
+                AND unitqty_{idx} <> ''
                 AND id IN %(template_ids)s
         """ for idx in range(1, 4)
         ])
@@ -334,13 +345,14 @@ class ProductTemplate(models.Model):
                         product_attribute.id = %(size_attr_id)s
                 ) AS attribute_values
                 INNER JOIN line_values ON line_values.attr_value_id = attribute_values.id
-                JOIN product_template ON line_values.tmpl_id = product_template.id 
+                JOIN product_template ON line_values.tmpl_id = product_template.id
+            WHERE
+                line_values.size IS NOT NULL AND line_values.size <> ''
             ON CONFLICT ON CONSTRAINT product_template_attribute_line_tmpl_attr_uniq DO
             UPDATE
             SET
-                active = TRUE RETURNING id,
-                attribute_id,
-                product_tmpl_id
+                active = TRUE 
+            RETURNING id, attribute_id, product_tmpl_id
         """
 
     def _get_cte_inserted_standard_price(self):
@@ -357,8 +369,6 @@ class ProductTemplate(models.Model):
             FROM
                 inserted_products
                 JOIN line_values ON inserted_products.default_code = line_values.default_code
-                JOIN inserted_product_template_attribute_value ON product_attribute_value_id = attr_value_id
-                AND inserted_product_template_attribute_value.product_tmpl_id = inserted_products.product_tmpl_id
             ON CONFLICT (fields_id, COALESCE(company_id, 0), COALESCE(res_id, ''::character varying)) DO UPDATE SET
                 value_float = EXCLUDED.value_float
             RETURNING 
@@ -423,6 +433,8 @@ class ProductTemplate(models.Model):
             FROM
                 inserted_template_attr_lines
                 JOIN line_values ON inserted_template_attr_lines.product_tmpl_id = line_values.tmpl_id 
+            WHERE
+                attribute_id IS NOT NULL
             ON CONFLICT DO NOTHING 
             RETURNING 
                 id,
@@ -452,6 +464,7 @@ class ProductTemplate(models.Model):
             INSERT INTO product_attribute_value (name, attribute_id) 
             SELECT DISTINCT size, %(size_attr_id)s
             FROM template_sizes
+            WHERE size IS NOT NULL
             ON CONFLICT DO NOTHING
             RETURNING
                 id, name
@@ -563,7 +576,11 @@ class ProductTemplate(models.Model):
             'uom_po_id': self.env.ref('uom.product_uom_unit').id,
             'attachment_id': self.env.context.get('attachment_id', None),
             'active': True,
-            'is_published': True
+            'is_published': True,
+            'sale_ok': True,
+            'purchase_ok': True,
+            'invoice_policy': self.env['ir.default'].get('product.template','invoice_policy') or 'order',
+            'purchase_method': self.env['ir.default'].get('product.template','purchase_method') or 'receive',
         }
 
     def _optimized_update(self, vals_dict):
@@ -707,10 +724,11 @@ class ProductTemplate(models.Model):
         # 2) Handle products with multiple variants
         insert_supplierinfo_query = '''
             INSERT INTO product_supplierinfo
-                (sequence, name, product_id, product_name, product_code, currency_id, mfr_name, mfr_num, date_start, date_end, company_id, min_qty, price, delay)
+                (sequence, name, product_tmpl_id, product_id, product_name, product_code, currency_id, mfr_name, mfr_num, date_start, date_end, company_id, min_qty, price, delay)
             SELECT
                 1 as sequence,
                 res_partner.id as name, 
+                product_template.id as product_tmpl_id,
                 product_product.id as product_id,
                 NULL as product_name,
                 product_template.default_code as product_code,

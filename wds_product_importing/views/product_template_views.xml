@@ -22,7 +22,7 @@
 
         </field>
     </record>
-
+<!-- 
     <record id="product_template_search_view_inherit_wds" model="ir.ui.view">
         <field name="name">product.template.search.view.inherit.wds</field>
         <field name="model">product.template</field>
@@ -33,7 +33,7 @@
                 <filter string="To Remove" name="to_remove" domain="[('to_remove', '=', True)]"/>
             </xpath>
         </field>
-    </record>
+    </record> -->
 
     <record id="product_supplierinfo_tree_view_inherit_wds" model="ir.ui.view">
         <field name="name">product.supplierinfo.tree.view.inherit.wds</field>

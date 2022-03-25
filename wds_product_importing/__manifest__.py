@@ -24,6 +24,7 @@
                 'purchase',
                 'stock',
                 'website_sale',
+                'stock_dropshipping'
                 ],
 
     # always loaded

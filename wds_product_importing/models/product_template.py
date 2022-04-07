@@ -222,8 +222,10 @@ class ProductTemplate(models.Model):
                     product.image_updated = False
                 except ValueError as e:
                     _logger.warning('Image timeout on product {}'.format(product.name))
+                    product.image_1920 = self.env.company.logo
                 except:
                     _logger.warning('Unexpected error importing image on product {}'.format(product.name))
+                    product.image_1920 = self.env.company.logo
             self._cr.commit()
             _logger.info(f"Batch of {min(batch_size, len(images_to_update))} images imported.")
         _logger.info(f"Image import done.")

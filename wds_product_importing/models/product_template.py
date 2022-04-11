@@ -97,7 +97,7 @@ class ProductTemplate(models.Model):
     cost_3 = fields.Float(string='COST3')
     list_3 = fields.Float(string='LIST3')
 
-    # to_remove = fields.Boolean(string='To Remove', default=False)
+    to_remove = fields.Boolean(string='To Remove', default=False)
     attachment_id = fields.Many2one(comodel_name='ir.attachment', index=True)
 
     '''
@@ -138,12 +138,11 @@ class ProductTemplate(models.Model):
         self._import_images()
         timer.cancel()
 
-    def _import_documents(self, documents, batch_size=30):
+    def _import_documents(self, documents, batch_size=1000):
         if not documents:
             return
         _logger.info('Importing documents')
         self = self.with_context(active_test=False, prefetch_fields=False, mail_notrack=True, tracking_disable=True, mail_activity_quick_update=False)
-        product = self.env['product.product'].with_context(active_test=False, prefetch_fields=False, mail_notrack=True, tracking_disable=True, mail_activity_quick_update=False)
         company = self.company_id or self.env.company
         for doc in documents:
             # Get table rows in dictionary form
@@ -188,16 +187,29 @@ class ProductTemplate(models.Model):
                 self._cr.commit()
         _logger.info('Import done!')
 
-        self.search([('active','=',False),('attachment_id', 'in', documents.mapped('attachment_id').ids)]).action_unarchive()
-        product.search([('active','=',False),('attachment_id', 'in', documents.mapped('attachment_id').ids)]).action_unarchive()
-
-        self.search([('active','=',True),('attachment_id', 'not in', documents.mapped('attachment_id').ids)]).action_archive()
-        product.search([('active','=',True),('attachment_id', 'not in', documents.mapped('attachment_id').ids)]).action_archive()
-        
+        self._handle_stale_products(documents)
         documents.folder_id = company.complete_import_folder.id
 
-        self.env.ref('wds_product_importing.cron_import_images').nextcall = datetime.now() + timedelta(minutes=5)
+        try:
+            self.env.ref('wds_product_importing.cron_import_images').nextcall = datetime.now() + timedelta(minutes=5)
+        except:
+            pass
         return True
+
+    def _handle_stale_products(self, documents):
+        product = self.env['product.product'].with_context(active_test=False, prefetch_fields=False, mail_notrack=True, tracking_disable=True, mail_activity_quick_update=False)
+        company = self.company_id or self.env.company
+
+        self.search([('active','=',False),('attachment_id', 'in', documents.mapped('attachment_id').ids)]).write({'to_remove':False})
+        product.search([('active','=',False),('attachment_id', 'in', documents.mapped('attachment_id').ids)]).write({'to_remove':False})
+        self.search([('active','=',False),('attachment_id', 'in', documents.mapped('attachment_id').ids)]).action_unarchive()
+        product.search([('active','=',False),('attachment_id', 'in', documents.mapped('attachment_id').ids)]).action_unarchive()
+        if company.stale_product_handling == 'archive':
+            self.search([('active','=',True),('attachment_id', 'not in', documents.mapped('attachment_id').ids)]).action_archive()
+            product.search([('active','=',True),('attachment_id', 'not in', documents.mapped('attachment_id').ids)]).action_archive()
+        elif company.stale_product_handling == 'flag':
+            self.search([('active','=',True),('attachment_id', 'not in', documents.mapped('attachment_id').ids)]).write({'to_remove': True})
+            product.search([('active','=',True),('attachment_id', 'not in', documents.mapped('attachment_id').ids)]).write({'to_remove': True})
 
     def enable_dropshipping(self):
         dropship_route = self.env.ref('stock_dropshipping.route_drop_shipping')
@@ -380,8 +392,7 @@ class ProductTemplate(models.Model):
         for idx, val in enumerate(vals_list):
             vals_list[idx] = [v for k, v in val.items()]
         query_create_templates = f"INSERT INTO product_template ( {', '.join(fields)} ) VALUES %s RETURNING id"
-        execute_values(self._cr, query_create_templates, vals_list)
-        tmpl_ids = self._cr.fetchall()
+        tmpl_ids = execute_values(self._cr, query_create_templates, vals_list, fetch=True)
         ids = [v[0] for v in tmpl_ids]
         return Product.browse(ids)
 

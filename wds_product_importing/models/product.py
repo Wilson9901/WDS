@@ -15,7 +15,7 @@ class ProductProduct(models.Model):
     unit = fields.Char(string='Unit')
     unitqty = fields.Char(string='Unit Quantity')
     base_list_price = fields.Float(string='Variant Base Price')
-    # to_remove = fields.Boolean(string='To Remove', default=False)
+    to_remove = fields.Boolean(string='To Remove', default=False)
     
     attachment_id = fields.Many2one(comodel_name='ir.attachment')
     lst_price = fields.Float(store=True)
@@ -47,5 +47,5 @@ class SupplierInfo(models.Model):
 
     mfr_num = fields.Char(string='Manufacturer Number')
     mfr_name = fields.Char(string='Manufacturer Name')
-    # to_remove = fields.Boolean(related='product_id.to_remove')
+    to_remove = fields.Boolean(related='product_id.to_remove')
     catno = fields.Char(related='product_tmpl_id.product_code', string='Catalog Number')

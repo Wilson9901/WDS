@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data>
+        <template id="product_inherit_wds_website_sale" inherit_id="website_sale.product">
+            <xpath expr="//div[@id='product_details']//a[@id='add_to_cart']" position="replace">
+                <!-- Hide 'Add to Cart' on Product Details page for public users -->
+                <t t-if='product._is_hidden_add_to_cart_public()'>
+                    <a role="button" id="add_to_cart" groups="base.group_no_one,base.group_portal,base.group_user" class="btn btn-primary btn-lg mt16 js_check_product a-submit d-block d-sm-inline-block" href="#"><i class="fa fa-shopping-cart"/> Add to Cart</a>
+                </t>
+                <t t-else=''>
+                    <a role="button" id="add_to_cart" class="btn btn-primary btn-lg mt16 js_check_product a-submit d-block d-sm-inline-block" href="#"><i class="fa fa-shopping-cart"/> Add to Cart</a>
+                </t>
+            </xpath>
+        </template>
+        <template id="product_quantity_inherit_wds_website_sale" inherit_id="website_sale.product_quantity">
+            <xpath expr="//div[hasclass('css_quantity')]" position="replace">
+                <!-- Hide Quantity info/buttons on Product Details page for public users -->
+                <t t-if='product._is_hidden_add_to_cart_public()'>
+                    <div class="css_quantity input-group" groups="base.group_no_one,base.group_portal,base.group_user" contenteditable="false">
+                        <div class="input-group-prepend">
+                            <a t-attf-href="#" class="btn btn-secondary js_add_cart_json" aria-label="Remove one" title="Remove one">
+                                <i class="fa fa-minus"></i>
+                            </a>
+                        </div>
+                        <input type="text" class="form-control quantity" data-min="1" name="add_qty" t-att-value="add_qty or 1"/>
+                        <div class="input-group-append">
+                            <a t-attf-href="#" class="btn btn-secondary float_left js_add_cart_json" aria-label="Add one" title="Add one">
+                                <i class="fa fa-plus"></i>
+                            </a>
+                        </div>
+                    </div>
+                </t>
+                <t t-else=''>
+                    <div class="css_quantity input-group" contenteditable="false">
+                        <div class="input-group-prepend">
+                            <a t-attf-href="#" class="btn btn-secondary js_add_cart_json" aria-label="Remove one" title="Remove one">
+                                <i class="fa fa-minus"></i>
+                            </a>
+                        </div>
+                        <input type="text" class="form-control quantity" data-min="1" name="add_qty" t-att-value="add_qty or 1"/>
+                        <div class="input-group-append">
+                            <a t-attf-href="#" class="btn btn-secondary float_left js_add_cart_json" aria-label="Add one" title="Add one">
+                                <i class="fa fa-plus"></i>
+                            </a>
+                        </div>
+                    </div>
+                </t>
+            </xpath>
+        </template>
+        <template id="header_cart_link_inherit_wds_website_sale" inherit_id="website_sale.header_cart_link">
+            <xpath expr="//a[@href='/shop/cart']" position="replace">
+                <!-- Hide Cart info button on website header for public users -->
+                <t t-if='website_sale_order._is_hidden_add_to_cart_public()'>
+                    <a href="/shop/cart" groups="base.group_no_one,base.group_portal,base.group_user" t-attf-class="#{_link_class}">
+                        <i t-if="_icon" class="fa fa-shopping-cart"/>
+                        <span t-if="_text">My Cart</span>
+                        <sup class="my_cart_quantity badge badge-primary" t-esc="website_sale_order and website_sale_order.cart_quantity or '0'" t-att-data-order-id="website_sale_order and website_sale_order.id or ''"/>
+                    </a>
+                </t>
+                <t t-else=''>
+                    <a href="/shop/cart" t-attf-class="#{_link_class}">
+                        <i t-if="_icon" class="fa fa-shopping-cart"/>
+                        <span t-if="_text">My Cart</span>
+                        <sup class="my_cart_quantity badge badge-primary" t-esc="website_sale_order and website_sale_order.cart_quantity or '0'" t-att-data-order-id="website_sale_order and website_sale_order.id or ''"/>
+                    </a>
+                </t>
+            </xpath>
+        </template>
+        <template id="products_add_to_cart_inherit_wds_website_sale" inherit_id="website_sale.products_add_to_cart">
+            <xpath expr="//a[@href='#']" position="replace">
+                <!-- Hide 'Add to Cart' for public users -->
+                <t t-if="product._is_hidden_add_to_cart_public()">
+                    <a href="#" groups="base.group_no_one,base.group_portal,base.group_user" role="button" class="btn btn-secondary a-submit" aria-label="Shopping cart" title="Shopping cart">
+                        <span class="fa fa-shopping-cart"/>
+                    </a>            
+                </t>
+                <t t-else="">
+                    <a href="#" role="button" class="btn btn-secondary a-submit" aria-label="Shopping cart" title="Shopping cart">
+                        <span class="fa fa-shopping-cart"/>
+                    </a>                
+                </t>
+            </xpath>
+        </template>
+    </data>
+</odoo>

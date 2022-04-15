@@ -192,7 +192,7 @@ class ProductTemplate(models.Model):
 
         try:
             self.env.ref('wds_product_importing.cron_import_images').nextcall = datetime.now() + timedelta(minutes=5)
-        except:
+        except Exception:
             pass
         return True
 
@@ -392,7 +392,14 @@ class ProductTemplate(models.Model):
         for idx, val in enumerate(vals_list):
             vals_list[idx] = [v for k, v in val.items()]
         query_create_templates = f"INSERT INTO product_template ( {', '.join(fields)} ) VALUES %s RETURNING id"
-        tmpl_ids = execute_values(self._cr, query_create_templates, vals_list, fetch=True)
+        # fetch was added in psycopg version 2.8. If it doesn't exist we expand the page size adn then manually fetch
+        try:
+            tmpl_ids = execute_values(
+                self._cr, query_create_templates, vals_list, fetch=True)
+        except Exception:
+            execute_values(self._cr, query_create_templates,
+                           vals_list, page_size=len(vals_list))
+            tmpl_ids = self._cr.fetchall()
         ids = [v[0] for v in tmpl_ids]
         return Product.browse(ids)
 

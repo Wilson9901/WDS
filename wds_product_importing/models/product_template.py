@@ -169,25 +169,25 @@ class ProductTemplate(models.Model):
                 # Post-processing
                 ## Write attachment_id to product variants that don't need updating so that they won't get archived later
                 updated_products['updated_products'].write({'attachment_id': doc.attachment_id.id})
-                # updated_products['updated_products'].mapped('product_variant_ids').filtered(lambda p: p.active).write({'attachment_id': doc.attachment_id.id})
+                updated_products['no_new_variants'].mapped('product_variant_ids').filtered(lambda p: p.active).write({'attachment_id': doc.attachment_id.id})
                 ## Enable dropshipping on products
                 new_product_templates.enable_dropshipping()
                 ## Flag products to update images
                 (new_product_templates + updated_products['to_update_images']).write({'image_updated': True})
                 ## Create / update variants
-                # products_to_update_variants = new_product_templates + updated_products['to_update_variants']
-                all_products = new_product_templates + updated_products['updated_products']
-                # if (products_to_update_variants):
-                all_products.with_context(attachment_id=doc.attachment_id.id)._update_product_variants()
-                all_products._update_pricelists()
-                all_products._set_list_price()
+                products_to_update_variants = new_product_templates + updated_products['to_update_variants']
+                # all_products = new_product_templates + updated_products['updated_products']
+                if (products_to_update_variants):
+                    products_to_update_variants.with_context(attachment_id=doc.attachment_id.id)._update_product_variants()
+                    products_to_update_variants._update_pricelists()
+                    products_to_update_variants._set_list_price()
                 # Increase batch
-                _logger.info(f'Importing batch #{doc.attachment_id.batch} done.')
+                _logger.info(f'Importing batch #{doc.attachment_id.batch} from {doc.attachment_name} done.')
                 doc.attachment_id.batch += 1
                 self._cr.commit()
-        _logger.info('Import done!')
 
         self._handle_stale_products(documents)
+        _logger.info('Import done!')
         documents.folder_id = company.complete_import_folder.id
 
         try:
@@ -331,10 +331,10 @@ class ProductTemplate(models.Model):
         Product = self.env['product.template']
         if not vals_dict:
             return {
-                # 'to_update_variants': Product, 
+                'to_update_variants': Product, 
                 'to_update_images': Product, 
                 'updated_products': Product,
-                # 'no_new_variants': Product
+                'no_new_variants': Product
             }
         # Step 0: Preprocessing
         fields = list(list(vals_dict.values())[0].keys())
@@ -345,7 +345,8 @@ class ProductTemplate(models.Model):
         ]
 
         # Step 1: Read fields that we need to know if they change for additional postprocessing
-        fields_to_check = ['image_url']
+        fields_to_check = fields.copy()
+        fields_to_check.remove('attachment_id')
         product_ids = tuple(vals_dict.keys())
         init_search_query = f"SELECT {', '.join(['id']+fields_to_check)} FROM product_template WHERE id IN %s ORDER BY id"
         self._cr.execute(init_search_query, (product_ids, ))
@@ -366,21 +367,21 @@ class ProductTemplate(models.Model):
         final_values = self._cr.fetchall()
 
         # Step 4: For all fields we care about that changed, determine which ones need additional computation
+        image_index = fields_to_check.index('image_url')+1
         update_images = [
             i[1][0] for i in zip(init_values, final_values)
-            if i[0][1] != i[1][1] and i[1][1]
+            if i[0][image_index] != i[1][image_index] and i[1][image_index]
         ]
         # size_indexes = range(1, 4)
-        # update_variants = [
-        #     i[1][0] for i in zip(init_values, final_values)
-        #     if any(i[0][size] != i[1][size] and (i[1][size] or i[0][size])
-        #            for size in size_indexes) or (i[0][5] != i[1][5] and i[1][5])
-        # ]
+        update_variants = [
+            i[1][0] for i in zip(init_values, final_values)
+            if i[0] != i[1]
+        ]
         return {
-            # 'to_update_variants': Product.browse(update_variants),
+            'to_update_variants': Product.browse(update_variants),
             'to_update_images': Product.browse(update_images),
             'updated_products': Product.browse(product_ids),
-            # 'no_new_variants': Product.browse(product_ids) - Product.browse(update_variants)
+            'no_new_variants': Product.browse(product_ids) - Product.browse(update_variants)
         }
 
     def _optimized_create(self, vals_list):

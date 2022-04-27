@@ -24,7 +24,7 @@ class XlsxIterator:
     def __init__(self, sheet):
         self.sheet = sheet
         self.nrows = sheet.nrows
-        self.current_row = 0
+        self.current_row = 1
 
     def __iter__(self):
         return self
@@ -36,6 +36,14 @@ class XlsxIterator:
         self.current_row += 1
         return row
 
+class XlsxDictIterator(XlsxIterator):
+    def __init__(self, sheet):
+        super().__init__(sheet)
+        self.headers = sheet.row_values(0)
+
+    def __next__(self):
+        row = super().__next__()
+        return dict(zip(self.headers, row))
 
 def _convert_sheet_to_list_dict(sheet):
     vals = []
@@ -50,16 +58,17 @@ class IrAttachment(models.Model):
 
     batch = fields.Integer(default=0)
 
-    def _read_as_dict_list(self):
+    def _read_as_dict_list(self, start=0, end=None):
         self.ensure_one()
         filetype = mimetypes.guess_extension(self.mimetype)
         data = base64.b64decode(self.datas)
         try:
             if filetype == '.xlsx':
                 sheet = xlrd.open_workbook(file_contents=data).sheet_by_index(0)
-                return _convert_sheet_to_list_dict(sheet)
+                return itertools.islice(XlsxDictIterator(sheet), start, end)
+                # return _convert_sheet_to_list_dict(sheet)
             elif filetype == '.csv':
-                return list(csv.DictReader(io.StringIO(data.decode('utf-8'))))
+                return itertools.islice(csv.DictReader(io.StringIO(data.decode('utf-8'))), start, end)
             else:
                 _logger.error(f'Cannot import from {self.name} since it is not the right filetype.')
                 return []

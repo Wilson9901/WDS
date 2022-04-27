@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
+import itertools
 import logging
 import math
 import threading
@@ -147,24 +148,24 @@ class ProductTemplate(models.Model):
         failed_imports = self.env['documents.document']
         for doc in documents.with_context(prefetch_fields=False):
             doc._prefetch_ids = doc._ids
-            # Get table rows in dictionary form
-            data_rows = doc.attachment_id._read_as_dict_list()
-            if not data_rows:
-                continue
-            num_rows = len(data_rows)
+            # Get first rows in dictionary form
+            data_rows = doc.attachment_id._read_as_dict_list(0, 1)
             # Get table column header to field mapping
-            field_mapping = self._get_fields_column_mapping(data_rows[0].keys())
+            field_mapping = self._get_fields_column_mapping(next(data_rows).keys())
+            del data_rows
             if self.user_has_groups('base.group_no_one'):
                 doc.attachment_id.batch = 0 # Useful for debugging. This lets you reuse the same document repeatedly.
-            while batch_size * doc.attachment_id.batch < num_rows:
+            while True:
                 try:
                     if threading.current_thread().timed_out:
                         return False
                 except AttributeError:  # timed_out won't exist if launched from action menu and not cron
                     pass
                 try:
-                    batched_rows = data_rows[batch_size*doc.attachment_id.batch:batch_size*(doc.attachment_id.batch + 1)]
+                    batched_rows = doc.attachment_id._read_as_dict_list( batch_size*doc.attachment_id.batch, batch_size*(doc.attachment_id.batch + 1))
                     to_create, to_update = self.with_context(attachment_id=doc.attachment_id.id)._split_rows_into_new_and_existing_products(batched_rows, field_mapping)
+                    if len(to_create)==0 and len(to_update) == 0:
+                        break
                     # Update existing
                     updated_products = self._optimized_update(to_update)
                     # Create new
@@ -195,7 +196,7 @@ class ProductTemplate(models.Model):
                     break
             doc.invalidate_cache()
 
-        if failed_imports:
+        if not failed_imports:
             self._handle_stale_products(documents)
             documents.folder_id = company.complete_import_folder.id
         _logger.info('Import done!')

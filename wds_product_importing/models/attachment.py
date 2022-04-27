@@ -84,34 +84,39 @@ class Document(models.Model):
             raise NotImplemented(_("Cannot handle files that are not csv or xlsx!"))
 
     def _split_document(self, rows = 10000):
+        self = self.with_context(prefetch_fields=False)
         for document in self:
             try:
-                row_iterator = document._get_spreadsheet_iterator()
-                document._split_rows(row_iterator, rows=rows)
+                document._prefetch_ids = document._ids
+                document._split_rows(rows=rows)
+                document.invalidate_cache()
             except Exception as e:
+                # We usually get a memory error here.
                 _logger.error(f'Failed reading file data for {document.name}\nError: {e}')
 
-    def _split_rows(self, row_iterator, rows = 10000):
-        for document in self:
-            company = document.company_id or self.env.company
-            headers = next(row_iterator)
-            batch = 1
-            current_row = 0
-            for row in row_iterator:
-                if current_row == 0:
-                    output = io.StringIO()
-                    writer = csv.writer(output)
-                    writer.writerow(headers)
-                writer.writerow(row)
-                current_row += 1
-                if current_row >= rows:
-                    part_data = base64.b64encode(output.getvalue().encode('utf-8'))
-                    self.env['documents.document'].create({
-                        "name": f"{document.attachment_name.split('.')[0]}_Part_{batch}.csv",
-                        "datas": part_data,
-                        "folder_id": document.folder_id.id
-                    })
-                    current_row = 0
-                    batch += 1
-            document.folder_id = company.complete_import_folder.id
+    def _split_rows(self, rows = 10000):
+        self.ensure_one()
+        company = self.company_id or self.env.company
+        row_iterator = self._get_spreadsheet_iterator()
+        headers = next(row_iterator)
+        batch = 1
+        current_row = 0
+        for row in row_iterator:
+            if current_row == 0:
+                output = io.StringIO()
+                writer = csv.writer(output)
+                writer.writerow(headers)
+            writer.writerow(row)
+            current_row += 1
+            if current_row >= rows:
+                part_data = base64.b64encode(output.getvalue().encode('utf-8'))
+                self.env['documents.document'].create({
+                    "name": f"{self.attachment_name.split('.')[0]}_Part_{batch}.csv",
+                    "datas": part_data,
+                    "folder_id": self.folder_id.id
+                })
+              
+                current_row = 0
+                batch += 1
+        self.folder_id = company.complete_import_folder.id
         return True

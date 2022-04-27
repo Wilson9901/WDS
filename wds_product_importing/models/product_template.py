@@ -138,13 +138,15 @@ class ProductTemplate(models.Model):
         self._import_images()
         timer.cancel()
 
-    def _import_documents(self, documents, batch_size=1000):
+    def _import_documents(self, documents, batch_size=5000):
         if not documents:
             return
         _logger.info('Importing documents')
         self = self.with_context(active_test=False, prefetch_fields=False, mail_notrack=True, tracking_disable=True, mail_activity_quick_update=False)
         company = self.company_id or self.env.company
-        for doc in documents:
+        failed_imports = self.env['documents.document']
+        for doc in documents.with_context(prefetch_fields=False):
+            doc._prefetch_ids = doc._ids
             # Get table rows in dictionary form
             data_rows = doc.attachment_id._read_as_dict_list()
             if not data_rows:
@@ -160,35 +162,43 @@ class ProductTemplate(models.Model):
                         return False
                 except AttributeError:  # timed_out won't exist if launched from action menu and not cron
                     pass
-                batched_rows = data_rows[batch_size*doc.attachment_id.batch:batch_size*(doc.attachment_id.batch + 1)]
-                to_create, to_update = self.with_context(attachment_id=doc.attachment_id.id)._split_rows_into_new_and_existing_products(batched_rows, field_mapping)
-                # Update existing
-                updated_products = self._optimized_update(to_update)
-                # Create new
-                new_product_templates = self._optimized_create(to_create) 
-                # Post-processing
-                ## Write attachment_id to product variants that don't need updating so that they won't get archived later
-                updated_products['updated_products'].write({'attachment_id': doc.attachment_id.id})
-                updated_products['no_new_variants'].mapped('product_variant_ids').filtered(lambda p: p.active).write({'attachment_id': doc.attachment_id.id})
-                ## Enable dropshipping on products
-                new_product_templates.enable_dropshipping()
-                ## Flag products to update images
-                (new_product_templates + updated_products['to_update_images']).write({'image_updated': True})
-                ## Create / update variants
-                products_to_update_variants = new_product_templates + updated_products['to_update_variants']
-                # all_products = new_product_templates + updated_products['updated_products']
-                if (products_to_update_variants):
-                    products_to_update_variants.with_context(attachment_id=doc.attachment_id.id)._update_product_variants()
-                    products_to_update_variants._update_pricelists()
-                    products_to_update_variants._set_list_price()
-                # Increase batch
-                _logger.info(f'Importing batch #{doc.attachment_id.batch} from {doc.attachment_name} done.')
-                doc.attachment_id.batch += 1
-                self._cr.commit()
+                try:
+                    batched_rows = data_rows[batch_size*doc.attachment_id.batch:batch_size*(doc.attachment_id.batch + 1)]
+                    to_create, to_update = self.with_context(attachment_id=doc.attachment_id.id)._split_rows_into_new_and_existing_products(batched_rows, field_mapping)
+                    # Update existing
+                    updated_products = self._optimized_update(to_update)
+                    # Create new
+                    new_product_templates = self._optimized_create(to_create) 
+                    # Post-processing
+                    ## Write attachment_id to product variants that don't need updating so that they won't get archived later
+                    updated_products['updated_products'].write({'attachment_id': doc.attachment_id.id})
+                    updated_products['no_new_variants'].mapped('product_variant_ids').filtered(lambda p: p.active).write({'attachment_id': doc.attachment_id.id})
+                    ## Enable dropshipping on products
+                    new_product_templates.enable_dropshipping()
+                    ## Flag products to update images
+                    (new_product_templates + updated_products['to_update_images']).write({'image_updated': True})
+                    ## Create / update variants
+                    products_to_update_variants = new_product_templates + updated_products['to_update_variants']
+                    # all_products = new_product_templates + updated_products['updated_products']
+                    if (products_to_update_variants):
+                        products_to_update_variants.with_context(attachment_id=doc.attachment_id.id)._update_product_variants()
+                        products_to_update_variants._update_pricelists()
+                        products_to_update_variants._set_list_price()
+                    # Increase batch
+                    _logger.info(f'Importing batch #{doc.attachment_id.batch} from {doc.attachment_name} done.')
+                    doc.attachment_id.batch += 1
+                    self._cr.commit()
+                except Exception as e:
+                    _logger.error(f"There was an error somewhere in file {doc.attachment_name} between rows {batch_size * doc.attachment_id.batch + 2} and {batch_size*(doc.attachment_id.batch + 1) + 2}.\nError: {e}")
+                    self._cr.rollback()
+                    failed_imports += doc
+                    break
+            doc.invalidate_cache()
 
-        self._handle_stale_products(documents)
+        if failed_imports:
+            self._handle_stale_products(documents)
+            documents.folder_id = company.complete_import_folder.id
         _logger.info('Import done!')
-        documents.folder_id = company.complete_import_folder.id
 
         try:
             self.env.ref('wds_product_importing.cron_import_images').nextcall = datetime.now() + timedelta(minutes=5)

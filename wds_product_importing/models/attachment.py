@@ -92,7 +92,7 @@ class Document(models.Model):
         else:
             raise NotImplemented(_("Cannot handle files that are not csv or xlsx!"))
 
-    def _split_document(self, rows = 10000):
+    def _split_document(self, rows = 100000):
         self = self.with_context(prefetch_fields=False)
         for document in self:
             try:
@@ -103,7 +103,7 @@ class Document(models.Model):
                 # We usually get a memory error here.
                 _logger.error(f'Failed reading file data for {document.name}\nError: {e}')
 
-    def _split_rows(self, rows = 10000):
+    def _split_rows(self, rows = 100000):
         self.ensure_one()
         company = self.company_id or self.env.company
         row_iterator = self._get_spreadsheet_iterator()
@@ -120,12 +120,20 @@ class Document(models.Model):
             if current_row >= rows:
                 part_data = base64.b64encode(output.getvalue().encode('utf-8'))
                 self.env['documents.document'].create({
-                    "name": f"{self.attachment_name.split('.')[0]}_Part_{batch}.csv",
+                    "name": f"{self.attachment_name.split('.')[0]}_Split_{batch}.csv",
                     "datas": part_data,
                     "folder_id": self.folder_id.id
                 })
               
                 current_row = 0
                 batch += 1
+        if batch == 1 and mimetypes.guess_extension(self.mimetype) == '.csv': # File is smaller than batch size and in csv format, no need to split into multiple files
+            return True
+        part_data = base64.b64encode(output.getvalue().encode('utf-8'))
+        self.env['documents.document'].create({
+            "name": f"{self.attachment_name.split('.')[0]}_Split_{batch}.csv",
+            "datas": part_data,
+            "folder_id": self.folder_id.id
+        })
         self.folder_id = company.complete_import_folder.id
         return True

@@ -53,7 +53,7 @@
         <field name="binding_model_id" ref="documents.model_documents_document"/>
         <field name="state">code</field>
         <field name="code">
-            records.with_context(prefetch_fields=False)._split_document(rows=10000)
+            records.with_context(prefetch_fields=False)._split_document(rows=100000)
         </field>
     </record>
 

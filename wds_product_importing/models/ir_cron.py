@@ -49,7 +49,7 @@ class ir_cron(models.Model):
                 if job['id'] == cron.env.ref('wds_product_importing.cron_import_product_documents', raise_if_not_found=False).id and len(cron.env.company.import_folder.document_ids):
                     # update next call to 3 minutes if documents still remain in import folder
                     nextcall = datetime.now() + timedelta(minutes=3)
-                if job['id'] == cron.env.ref('wds_product_importing.action_import_product_images', raise_if_not_found=False).id and cron.env['product.template'].search([('image_updated','=',True)], limit=1):
+                if job['id'] == cron.env.ref('wds_product_importing.cron_import_images', raise_if_not_found=False).id and cron.env['product.template'].search([('image_updated','=',True)], limit=1):
                     # update next call to 3 minutes if documents still remain in import folder
                     nextcall = datetime.now() + timedelta(minutes=3)
                 cron_cr.execute("UPDATE ir_cron SET nextcall=%s, numbercall=%s, lastcall=%s"+addsql+" WHERE id=%s",(

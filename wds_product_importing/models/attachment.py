@@ -45,14 +45,6 @@ class XlsxDictIterator(XlsxIterator):
         row = super().__next__()
         return dict(zip(self.headers, row))
 
-def _convert_sheet_to_list_dict(sheet):
-    vals = []
-    cols = sheet.row_values(0)
-    for row_index in range(1, sheet.nrows):
-        row_data = sheet.row_values(row_index)
-        vals.append(dict(zip(cols, row_data)))
-    return vals
-
 class IrAttachment(models.Model):
     _inherit = 'ir.attachment'
 
@@ -66,7 +58,6 @@ class IrAttachment(models.Model):
             if filetype == '.xlsx':
                 sheet = xlrd.open_workbook(file_contents=data).sheet_by_index(0)
                 return itertools.islice(XlsxDictIterator(sheet), start, end)
-                # return _convert_sheet_to_list_dict(sheet)
             elif filetype == '.csv':
                 return itertools.islice(csv.DictReader(io.StringIO(data.decode('utf-8'))), start, end)
             else:
@@ -74,8 +65,7 @@ class IrAttachment(models.Model):
                 return []
         except:
             _logger.error(f'Failed reading file data for {self.name}')
-
-
+  
 
 class Document(models.Model):
     _inherit = 'documents.document'
@@ -100,7 +90,7 @@ class Document(models.Model):
                 document._split_rows(rows=rows)
                 document.invalidate_cache()
             except Exception as e:
-                # We usually get a memory error here.
+                # We usually get a memory error here from trying to cache all file data at once.
                 _logger.error(f'Failed reading file data for {document.name}\nError: {e}')
 
     def _split_rows(self, rows = 100000):
@@ -119,21 +109,24 @@ class Document(models.Model):
             current_row += 1
             if current_row >= rows:
                 part_data = base64.b64encode(output.getvalue().encode('utf-8'))
-                self.env['documents.document'].create({
+                newfile = self.env['documents.document'].create({
                     "name": f"{self.attachment_name.split('.')[0]}_Split_{batch}.csv",
                     "datas": part_data,
                     "folder_id": self.folder_id.id
                 })
+                _logger.info(f"Split file created: {newfile.name}")
               
                 current_row = 0
                 batch += 1
         if batch == 1 and mimetypes.guess_extension(self.mimetype) == '.csv': # File is smaller than batch size and in csv format, no need to split into multiple files
             return True
         part_data = base64.b64encode(output.getvalue().encode('utf-8'))
-        self.env['documents.document'].create({
+        newfile = self.env['documents.document'].create({
             "name": f"{self.attachment_name.split('.')[0]}_Split_{batch}.csv",
             "datas": part_data,
             "folder_id": self.folder_id.id
         })
+        _logger.info(f"Split file created: {newfile.name}")
+
         self.folder_id = company.complete_import_folder.id
         return True

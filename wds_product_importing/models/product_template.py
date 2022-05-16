@@ -210,23 +210,22 @@ class ProductTemplate(models.Model):
         product = self.env['product.product'].with_context(active_test=False, prefetch_fields=False, mail_notrack=True, tracking_disable=True, mail_activity_quick_update=False)
         company = self.company_id or self.env.company
 
-        imported_tmpls = self.search([('attachment_id', 'in', documents.mapped('attachment_id').ids)])
-        imported_variants = product.search([('attachment_id', 'in', documents.mapped('attachment_id').ids)])
-
-        tmpls_to_unarchive = imported_tmpls.filtered(lambda p: not p.active)
-        variants_to_unarchive = imported_variants.filtered(lambda p: not p.active)
-
+        tmpls_to_unarchive = self.search([('attachment_id', 'in', documents.mapped('attachment_id').ids),('active','=',False)])
+        variants_to_unarchive = product.search([('attachment_id', 'in', documents.mapped('attachment_id').ids),('active','=',False)])
         tmpls_to_unarchive.write({'to_remove':False})
         tmpls_to_unarchive.action_unarchive()
         variants_to_unarchive.write({'to_remove':False})
         variants_to_unarchive.action_unarchive()
 
+        tmpls_to_archive = self.search([('attachment_id', 'not in', documents.mapped('attachment_id').ids)])
+        variants_to_archive = product.search([('attachment_id', 'not in', documents.mapped('attachment_id').ids)])
+
         if company.stale_product_handling == 'archive':
-            (imported_tmpls - tmpls_to_unarchive).action_archive()
-            (imported_variants - variants_to_unarchive).action_archive()
+            tmpls_to_archive.action_archive()
+            variants_to_archive.action_archive()
         elif company.stale_product_handling == 'flag':
-            (imported_tmpls - tmpls_to_unarchive).write({'to_remove': True})
-            (imported_variants - variants_to_unarchive).write({'to_remove': True})
+            tmpls_to_archive.write({'to_remove': True})
+            variants_to_archive.write({'to_remove': True})
 
     def enable_dropshipping(self):
         dropship_route = self.env.ref('stock_dropshipping.route_drop_shipping')

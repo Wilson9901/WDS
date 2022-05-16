@@ -65,7 +65,8 @@ class ProductTemplate(models.Model):
 
     # image_1920 = fields.Binary(string='IMAGE')
     image_url = fields.Char(string="IMAGE")
-    image_updated = fields.Boolean(string="Image Needs Downloading", default=False, readonly=True)
+    image_updated = fields.Boolean(string="Image Needs Downloading", default=False, readonly=True, index=True)
+    image_failed = fields.Boolean(string="Image Import Failed", default=False, readonly=True, index=True)
     product_url = fields.Char(string='PRODUCT URL')
     weblink = fields.Char(string='ADDITIONAL WEBLINK')
     weblink_title = fields.Char(string='ADDITIONAL WEBLINK_TITLE')
@@ -114,7 +115,6 @@ class ProductTemplate(models.Model):
         def schedule_next_import(thread):
             thread.timed_out = True
             _logger.info('Reschedule import')
-            self.env.ref('wds_product_importing.cron_import_product_documents').nextcall = datetime.now() + timedelta(minutes=1)
 
         thread = threading.current_thread()
         thread.timed_out = False
@@ -130,7 +130,6 @@ class ProductTemplate(models.Model):
         def schedule_next_import(thread):
             thread.timed_out = True
             _logger.info('Reschedule image download')
-            self.env.ref('wds_product_importing.cron_import_images').nextcall = datetime.now() + timedelta(minutes=1)
 
         thread = threading.current_thread()
         thread.timed_out = False
@@ -139,7 +138,7 @@ class ProductTemplate(models.Model):
         self._import_images()
         timer.cancel()
 
-    def _import_documents(self, documents, batch_size=5000):
+    def _import_documents(self, documents, batch_size=1000):
         if not documents:
             return
         _logger.info('Importing documents')
@@ -186,7 +185,7 @@ class ProductTemplate(models.Model):
                         products_to_update_variants._update_pricelists()
                         products_to_update_variants._set_list_price()
                     # Increase batch
-                    _logger.info(f'Importing batch #{doc.attachment_id.batch} from {doc.attachment_name} done.')
+                    _logger.info(f'Importing batch #{doc.attachment_id.batch} from {doc.attachment_name} done. {len(new_product_templates)} products created. {len(updated_products["to_update_variants"])} products updated.')
                     doc.attachment_id.batch += 1
                     self._cr.commit()
                 except Exception as e:
@@ -211,47 +210,56 @@ class ProductTemplate(models.Model):
         product = self.env['product.product'].with_context(active_test=False, prefetch_fields=False, mail_notrack=True, tracking_disable=True, mail_activity_quick_update=False)
         company = self.company_id or self.env.company
 
-        self.search([('active','=',False),('attachment_id', 'in', documents.mapped('attachment_id').ids)]).write({'to_remove':False})
-        product.search([('active','=',False),('attachment_id', 'in', documents.mapped('attachment_id').ids)]).write({'to_remove':False})
-        self.search([('active','=',False),('attachment_id', 'in', documents.mapped('attachment_id').ids)]).action_unarchive()
-        product.search([('active','=',False),('attachment_id', 'in', documents.mapped('attachment_id').ids)]).action_unarchive()
+        imported_tmpls = self.search([('attachment_id', 'in', documents.mapped('attachment_id').ids)])
+        imported_variants = product.search([('attachment_id', 'in', documents.mapped('attachment_id').ids)])
+
+        tmpls_to_unarchive = imported_tmpls.filtered(lambda p: not p.active)
+        variants_to_unarchive = imported_variants.filtered(lambda p: not p.active)
+
+        tmpls_to_unarchive.write({'to_remove':False})
+        tmpls_to_unarchive.action_unarchive()
+        variants_to_unarchive.write({'to_remove':False})
+        variants_to_unarchive.action_unarchive()
+
         if company.stale_product_handling == 'archive':
-            self.search([('active','=',True),('attachment_id', 'not in', documents.mapped('attachment_id').ids)]).action_archive()
-            product.search([('active','=',True),('attachment_id', 'not in', documents.mapped('attachment_id').ids)]).action_archive()
+            (imported_tmpls - tmpls_to_unarchive).action_archive()
+            (imported_variants - variants_to_unarchive).action_archive()
         elif company.stale_product_handling == 'flag':
-            self.search([('active','=',True),('attachment_id', 'not in', documents.mapped('attachment_id').ids)]).write({'to_remove': True})
-            product.search([('active','=',True),('attachment_id', 'not in', documents.mapped('attachment_id').ids)]).write({'to_remove': True})
+            (imported_tmpls - tmpls_to_unarchive).write({'to_remove': True})
+            (imported_variants - variants_to_unarchive).write({'to_remove': True})
 
     def enable_dropshipping(self):
         dropship_route = self.env.ref('stock_dropshipping.route_drop_shipping')
         self.write({'route_ids': [(4,dropship_route.id,0)]})
 
     def _import_images(self, batch_size = 80):
+        self = self.with_context(active_test=False, prefetch_fields=False, mail_notrack=True, tracking_disable=True, mail_activity_quick_update=False)
         if self:
-            images_to_update = self.ids
+            images_to_update = self
         else:
-            images_to_update = self.search([('image_updated','=',True)]).ids
-        num_batches = math.ceil(len(images_to_update)/batch_size)
+            images_to_update = self.search([('image_updated','=',True),('image_failed','=',False)])
         _logger.info(f"Started importing images. {len(images_to_update)} images to import.")
-        for batch in range(num_batches):
+        idx = 0
+        for product in images_to_update:
             try:
                 if threading.current_thread().timed_out:
                     return False
             except AttributeError:  # timed_out won't exist if launched from action menu and not cron
                 pass
-            for product in self.browse(images_to_update[batch_size*batch:batch_size*(batch+1)]):
-                try:
-                    product.image_1920 = product._import_image_cached(product.image_url, product.id)
-                    product.image_updated = False
-                except ValueError as e:
-                    _logger.warning('Image timeout on product {}'.format(product.name))
-                    product.image_1920 = self.env.company.logo
-                except:
-                    _logger.warning('Unexpected error importing image on product {}'.format(product.name))
-                    product.image_1920 = self.env.company.logo
-            self._cr.commit()
-            _logger.info(f"Batch of {min(batch_size, len(images_to_update))} images imported.")
-        _logger.info(f"Image import done.")
+            try:
+                product.image_1920 = product._import_image_cached(product.image_url, product.id)
+                product.image_updated = False
+                product.image_failed = False
+            except Exception:
+                _logger.warning(f'Error importing image on product {product.name}')
+                product.image_1920 = self.env.company.logo
+                product.image_failed = True
+            idx += 1
+            if idx >= batch_size:
+                idx = 0
+                self._cr.commit()
+                _logger.info(f"Batch of {min(batch_size, len(images_to_update))} images imported.")
+        _logger.info("Image import done.")
         return True
 
     @api.model

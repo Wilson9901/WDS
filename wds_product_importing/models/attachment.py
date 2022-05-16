@@ -101,12 +101,6 @@ class Document(models.Model):
         batch = 1
         current_row = 0
         for row in row_iterator:
-            if current_row == 0:
-                output = io.StringIO()
-                writer = csv.writer(output)
-                writer.writerow(headers)
-            writer.writerow(row)
-            current_row += 1
             if current_row >= rows:
                 part_data = base64.b64encode(output.getvalue().encode('utf-8'))
                 newfile = self.env['documents.document'].create({
@@ -118,7 +112,13 @@ class Document(models.Model):
               
                 current_row = 0
                 batch += 1
-        if batch == 1 and mimetypes.guess_extension(self.mimetype) == '.csv': # File is smaller than batch size and in csv format, no need to split into multiple files
+            if current_row == 0:
+                output = io.StringIO()
+                writer = csv.writer(output)
+                writer.writerow(headers)
+            writer.writerow(row)
+            current_row += 1
+        if (batch == 1 and mimetypes.guess_extension(self.mimetype) == '.csv' and "_Split_" in self.attachment_name) or current_row == 0: # File is smaller than batch size and in csv format and has already been split, no need to split into multiple files
             return True
         part_data = base64.b64encode(output.getvalue().encode('utf-8'))
         newfile = self.env['documents.document'].create({

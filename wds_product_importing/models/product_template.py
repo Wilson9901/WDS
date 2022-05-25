@@ -160,6 +160,7 @@ class ProductTemplate(models.Model):
                         return False
                 except AttributeError:  # timed_out won't exist if launched from action menu and not cron
                     pass
+                batch = doc.attachment_id.batch
                 try:
                     batched_rows = doc.attachment_id._read_as_dict_list( batch_size*doc.attachment_id.batch, batch_size*(doc.attachment_id.batch + 1))
                     to_create, to_update = self.with_context(attachment_id=doc.attachment_id.id)._split_rows_into_new_and_existing_products(batched_rows, field_mapping)
@@ -189,21 +190,25 @@ class ProductTemplate(models.Model):
                     doc.attachment_id.batch += 1
                     self._cr.commit()
                 except Exception as e:
-                    _logger.error(f"There was an error somewhere in file {doc.attachment_name} between rows {batch_size * doc.attachment_id.batch + 2} and {batch_size*(doc.attachment_id.batch + 1) + 2}.\nError: {e}")
+                    _logger.error(f"There was an error somewhere in file {doc.attachment_name} between rows {batch_size * batch + 2} and {batch_size*(batch + 1) + 2}.\nError: {e}")
                     self._cr.rollback()
                     failed_imports += doc
                     break
             doc.invalidate_cache()
 
         if not failed_imports:
+            _logger.info('Data import done! Handling stale products now.')
             self._handle_stale_products(documents)
-            documents.folder_id = company.complete_import_folder.id
-        _logger.info('Import done!')
+            documents.folder_id = company.complete_import_folder
+            documents._cr.commit()
+            _logger.info('Import done!')
+            try:
+                self.env.ref('wds_product_importing.cron_import_images').nextcall = datetime.now() + timedelta(minutes=5)
+            except Exception:
+                pass
+        else:
+            _logger.error(f"The following document ids failed to import fully: {failed_imports.ids}")
 
-        try:
-            self.env.ref('wds_product_importing.cron_import_images').nextcall = datetime.now() + timedelta(minutes=5)
-        except Exception:
-            pass
         return True
 
     def _handle_stale_products(self, documents):
@@ -217,12 +222,14 @@ class ProductTemplate(models.Model):
         variants_to_unarchive.write({'to_remove':False})
         variants_to_unarchive.action_unarchive()
 
-        tmpls_to_archive = self.search([('attachment_id', 'not in', documents.mapped('attachment_id').ids)])
-        variants_to_archive = product.search([('attachment_id', 'not in', documents.mapped('attachment_id').ids)])
+        tmpls_to_archive = self.search([('attachment_id', 'not in', documents.mapped('attachment_id').ids),('active','=',True),('to_remove','=',False)])
+        variants_to_archive = product.search([('attachment_id', 'not in', documents.mapped('attachment_id').ids),('active','=',True),('to_remove','=',False)])
 
         if company.stale_product_handling == 'archive':
             tmpls_to_archive.action_archive()
+            tmpls_to_archive.write({'to_remove': True})
             variants_to_archive.action_archive()
+            variants_to_archive.write({'to_remove': True})
         elif company.stale_product_handling == 'flag':
             tmpls_to_archive.write({'to_remove': True})
             variants_to_archive.write({'to_remove': True})
@@ -234,30 +241,31 @@ class ProductTemplate(models.Model):
     def _import_images(self, batch_size = 80):
         self = self.with_context(active_test=False, prefetch_fields=False, mail_notrack=True, tracking_disable=True, mail_activity_quick_update=False)
         if self:
-            images_to_update = self
+            count = len(self)
+            batch_size = count
         else:
-            images_to_update = self.search([('image_updated','=',True),('image_failed','=',False)])
-        _logger.info(f"Started importing images. {len(images_to_update)} images to import.")
-        idx = 0
-        for product in images_to_update:
+            domain = [('image_updated','=',True),('image_failed','=',False)]
+            count = self.search(domain,count=True)
+        num_batches = math.ceil(count / batch_size)
+        _logger.info(f"Started importing images. {count} images to import.")
+        for _ in range(num_batches):
             try:
                 if threading.current_thread().timed_out:
                     return False
             except AttributeError:  # timed_out won't exist if launched from action menu and not cron
                 pass
-            try:
-                product.image_1920 = product._import_image_cached(product.image_url, product.id)
-                product.image_updated = False
-                product.image_failed = False
-            except Exception:
-                _logger.warning(f'Error importing image on product {product.name}')
-                product.image_1920 = self.env.company.logo
-                product.image_failed = True
-            idx += 1
-            if idx >= batch_size:
-                idx = 0
-                self._cr.commit()
-                _logger.info(f"Batch of {min(batch_size, len(images_to_update))} images imported.")
+            images_to_update = self or self.search(domain, limit=batch_size) # No need to set an offset since we are committing at the end of each iteration
+            for product in images_to_update:
+                try:
+                    product.image_1920 = product._import_image_cached(product.image_url, product.id)
+                    product.image_updated = False
+                    product.image_failed = False
+                except Exception:
+                    _logger.warning(f'Error importing image on product {product.name}')
+                    product.image_1920 = self.env.company.logo
+                    product.image_failed = True
+            images_to_update._cr.commit()
+            _logger.info(f"Batch of {len(images_to_update)} images imported.")
         _logger.info("Image import done.")
         return True
 

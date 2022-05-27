@@ -256,18 +256,30 @@ class ProductTemplate(models.Model):
                 pass
             images_to_update = self or self.search(domain, limit=batch_size) # No need to set an offset since we are committing at the end of each iteration
             for product in images_to_update:
-                try:
-                    product.image_1920 = product._import_image_cached(product.image_url, product.id)
-                    product.image_updated = False
-                    product.image_failed = False
-                except Exception:
-                    _logger.warning(f'Error importing image on product {product.name}')
-                    product.image_1920 = self.env.company.logo
-                    product.image_failed = True
+                product._import_single_image()
+                # try:
+                #     product.image_1920 = product._import_image_cached(product.image_url, product.id)
+                #     product.image_updated = False
+                #     product.image_failed = False
+                # except Exception:
+                #     _logger.warning(f'Error importing image on product {product.name}')
+                #     product.image_1920 = self.env.company.logo
+                #     product.image_failed = True
             images_to_update._cr.commit()
             _logger.info(f"Batch of {len(images_to_update)} images imported.")
         _logger.info("Image import done.")
         return True
+
+    def _import_single_image(self):
+        self.ensure_one()
+        try:
+            self.image_1920 = self._import_image_cached(self.image_url, self.id)
+            self.image_updated = False
+            self.image_failed = False
+        except Exception:
+            _logger.warning(f'Error importing image on product {self.name}')
+            self.image_1920 = self.env.company.logo
+            self.image_failed = True
 
     @api.model
     @tools.ormcache('url')

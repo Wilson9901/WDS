@@ -12,3 +12,5 @@ class ResConfigSettings(models.TransientModel):
 
     complete_import_folder = fields.Many2one('documents.folder', related='company_id.complete_import_folder', readonly=False,
                                              string="product imported workspace")
+
+    stale_product_handling = fields.Selection(related='company_id.stale_product_handling', readonly=False)

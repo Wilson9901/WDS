@@ -59,7 +59,7 @@ class IrAttachment(models.Model):
                 sheet = xlrd.open_workbook(file_contents=data).sheet_by_index(0)
                 return itertools.islice(XlsxDictIterator(sheet), start, end)
             elif filetype == '.csv':
-                return itertools.islice(csv.DictReader(io.StringIO(data.decode('utf-8'))), start, end)
+                return itertools.islice(csv.DictReader(io.StringIO(data.decode('utf-8-sig'))), start, end)
             else:
                 _logger.error(f'Cannot import from {self.name} since it is not the right filetype.')
                 return []

@@ -15,19 +15,18 @@ class WebsiteSale(WebsiteSale):
     def _get_search_domain(self, search, category, attrib_values, search_in_description=True):
         domains = [request.website.sale_product_domain()]
         if search:
-            for srch in search.split(" "):
-                subdomains = [
-                    [('name', 'ilike', srch)],
-                    [('product_variant_ids.default_code', 'ilike', srch)],
-                    [('product_variant_ids.product_code', 'ilike', srch)],
-                    [('product_variant_ids.mfr_num', 'ilike', srch)],
-                    [('product_variant_ids.mfr_name', 'ilike', srch)],
-                    [('product_variant_ids.vendor_name', 'ilike', srch)],
-                ]
-                if search_in_description:
-                    subdomains.append([('description', 'ilike', srch)])
-                    subdomains.append([('description_sale', 'ilike', srch)])
-                domains.append(expression.OR(subdomains))
+            subdomains = [
+                [('name', 'ilike', search)],
+                # [('product_variant_ids.default_code', 'ilike', search)],
+                # [('product_variant_ids.product_code', 'ilike', search)],
+                # [('product_variant_ids.mfr_num', 'ilike', search)],
+                # [('product_variant_ids.mfr_name', 'ilike', search)],
+                # [('product_variant_ids.vendor_name', 'ilike', search)],
+            ]
+            if search_in_description:
+                subdomains.append([('description', 'ilike', search)])
+                subdomains.append([('description_sale', 'ilike', search)])
+            domains.append(expression.OR(subdomains))
 
         if category:
             domains.append([('public_categ_ids', 'child_of', int(category))])

@@ -212,27 +212,25 @@ class ProductTemplate(models.Model):
         return True
 
     def _handle_stale_products(self, documents):
-        product = self.env['product.product'].with_context(active_test=False, prefetch_fields=False, mail_notrack=True, tracking_disable=True, mail_activity_quick_update=False)
         company = self.company_id or self.env.company
+        tables = ('product_template', 'product_product')
+        for table in tables:
+            self._cr.execute(f'''
+                UPDATE {table}
+                SET active = true, to_remove = false
+                WHERE attachment_id IN %s
+            ''', (tuple(documents.mapped('attachment_id').ids), ))
 
-        tmpls_to_unarchive = self.search([('attachment_id', 'in', documents.mapped('attachment_id').ids),('active','=',False)])
-        variants_to_unarchive = product.search([('attachment_id', 'in', documents.mapped('attachment_id').ids),('active','=',False)])
-        tmpls_to_unarchive.write({'to_remove':False})
-        tmpls_to_unarchive.action_unarchive()
-        variants_to_unarchive.write({'to_remove':False})
-        variants_to_unarchive.action_unarchive()
+            self._cr.execute(f'''
+                UPDATE {table}
+                SET 
+                    {"active = false," if company.stale_product_handling == 'archive' else ''} 
+                    to_remove = true
+                WHERE
+                    attachment_id NOT IN %s OR attachment_id IS NULL
+            ''', (tuple(documents.mapped('attachment_id').ids), ))
 
-        tmpls_to_archive = self.search([('attachment_id', 'not in', documents.mapped('attachment_id').ids),('active','=',True),('to_remove','=',False)])
-        variants_to_archive = product.search([('attachment_id', 'not in', documents.mapped('attachment_id').ids),('active','=',True),('to_remove','=',False)])
-
-        if company.stale_product_handling == 'archive':
-            tmpls_to_archive.action_archive()
-            tmpls_to_archive.write({'to_remove': True})
-            variants_to_archive.action_archive()
-            variants_to_archive.write({'to_remove': True})
-        elif company.stale_product_handling == 'flag':
-            tmpls_to_archive.write({'to_remove': True})
-            variants_to_archive.write({'to_remove': True})
+        self._cr.commit()
 
     def enable_dropshipping(self):
         dropship_route = self.env.ref('stock_dropshipping.route_drop_shipping')
